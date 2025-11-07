@@ -249,12 +249,25 @@ thread_unblock (struct thread *t) {
 	intr_set_level (old_level);
 }
 
+/**
+ * @brief 두 스레드의 wake_tick을 비교하여 정렬 기준을 제공합니다.
+ * @details list_insert_ordered에서 사용되며, a가 b보다 먼저 깨야 하면 True 반환
+ */
 bool wakeup_tick_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
     struct thread *ta = list_entry(a, struct thread, elem);
     struct thread *tb = list_entry(b, struct thread, elem);
     return ta->wake_tick < tb->wake_tick;
 }
 
+/**
+ * @brief 현재 스레드를 지정된 시간까지 잠들게(sleep) 만듭니다.
+ * @details 현재 스레드를 sleep_list에 깨어날 시간(wake_tick) 기준으로 정렬 삽입한 후,
+ * thread_block()을 호출하여 Block 상태로 전환합니다.
+ * 인터럽트 비활성화(intr_disable) 상태에서 수행하여 race condition을 방지합니다.
+ *
+ * @param wake_tick 스레드가 깨어나야 할 절대 시간 (타이머 tick 값)
+ * (wake_tick <= 0 이면 즉시 반환)
+ */
 void thread_sleep(int64_t wake_tick) {
 
 	if (wake_tick <= 0) return;
@@ -273,13 +286,21 @@ void thread_sleep(int64_t wake_tick) {
     intr_set_level(old_level);        // 인터럽트 복구
 }
 
+/**
+ * @brief 깨어날 시간이 된 스레드를 모두 깨웁니다.
+ * @details sleep_list는 wake_tick 기준 오름차순으로 정렬되어 있으므로,
+ * 리스트 맨 앞 스레드의 wake_tick이 아직 도래하지 않았다면
+ * 이후 스레드도 모두 대기 중이므로 즉시 종료합니다 (Early break → 효율적).
+ *
+ * @param cur_tic 현재 시스템 tick
+ */
 void check_wakeup(int64_t cur_tic) {
 
     while (!list_empty(&sleep_list)) {
         struct thread *t = list_entry(list_front(&sleep_list), struct thread, elem);
         if (t->wake_tick > cur_tic) // 정렬되어 있기 때문에 앞이 안깨면 뒤에는 깰게 없다 조기 종료
             break;
-        list_pop_front(&sleep_list);
+        list_pop_front(&sleep_list); // 깨어날 시간이 되었으므로 sleep_list에서 제거
         thread_unblock(t);  // ready_list에 추가 
     }
 }

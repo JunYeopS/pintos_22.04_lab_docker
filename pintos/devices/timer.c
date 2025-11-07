@@ -88,6 +88,14 @@ timer_elapsed (int64_t then) {
 }
 
 /* Suspends execution for approximately TICKS timer ticks. */
+/**
+ * @brief 현재 스레드를 지정된 시간(wake_tick)까지 잠들게 합니다.
+ * @details 현재 시스템 틱(timer_ticks)을 기준으로 깨어날 절대 시간(wake_tick)을 계산한 후,
+ * thread_sleep()을 호출하여 스레드를 sleep_list에 삽입하고 Block 상태로 전환합니다.
+ *
+ * @param ticks 현재 시점 기준으로 대기할 상대적 tick 값
+ * (ticks <= 0 이면 즉시 반환)
+ */
 void
 timer_sleep (int64_t ticks) {
 	int64_t start = timer_ticks ();
@@ -124,6 +132,10 @@ timer_print_stats (void) {
 }
 
 /* Timer interrupt handler. */
+/**
+ * @brief 타이머 인터럽트 발생 시 호출되는 핸들러입니다.
+ * @details tick 증가 → 스레드 깨움 → 스케줄러에 time slice 관리를 수행
+ */
 static void
 timer_interrupt (struct intr_frame *args UNUSED) {
 	ticks++;
