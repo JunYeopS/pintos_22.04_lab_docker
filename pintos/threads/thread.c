@@ -256,6 +256,9 @@ bool wakeup_tick_cmp(const struct list_elem *a, const struct list_elem *b, void 
 }
 
 void thread_sleep(int64_t wake_tick) {
+
+	if (wake_tick <= 0) return;
+
     struct thread *cur = thread_current(); // 현재 thread 받기
     enum intr_level old_level;			// 인터럽트 활성상태 저장용
 
