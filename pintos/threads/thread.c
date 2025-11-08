@@ -121,6 +121,24 @@ thread_init (void) {
 	initial_thread->tid = allocate_tid ();
 }
 
+/**
+ * @brief 두 스레드의 wake_tick을 비교하여 정렬 기준을 제공합니다.
+ * @details list_insert_ordered에서 사용되며, a가 b보다 먼저 깨야 하면 True 반환
+ */
+bool wakeup_tick_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+    struct thread *ta = list_entry(a, struct thread, elem);
+    struct thread *tb = list_entry(b, struct thread, elem);
+    return ta->wake_tick < tb->wake_tick;
+}
+
+bool ready_priority_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED){
+  struct thread *ta = list_entry(a, struct thread, elem);
+  struct thread *tb = list_entry(b, struct thread, elem);
+
+  // priority 높은게 앞에   
+  return ta->priority > tb->priority;
+}
+
 /* Starts preemptive thread scheduling by enabling interrupts.
    Also creates the idle thread. */
 void
@@ -244,20 +262,14 @@ thread_unblock (struct thread *t) {
 
 	old_level = intr_disable ();
 	ASSERT (t->status == THREAD_BLOCKED);
-	list_push_back (&ready_list, &t->elem);
+
 	t->status = THREAD_READY;
+	// priority 정렬 삽입
+	list_insert_ordered(&ready_list,&t->elem,ready_priority_cmp, NULL);
+
 	intr_set_level (old_level);
 }
 
-/**
- * @brief 두 스레드의 wake_tick을 비교하여 정렬 기준을 제공합니다.
- * @details list_insert_ordered에서 사용되며, a가 b보다 먼저 깨야 하면 True 반환
- */
-bool wakeup_tick_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
-    struct thread *ta = list_entry(a, struct thread, elem);
-    struct thread *tb = list_entry(b, struct thread, elem);
-    return ta->wake_tick < tb->wake_tick;
-}
 
 /**
  * @brief 현재 스레드를 지정된 시간까지 잠들게(sleep) 만듭니다.
@@ -363,7 +375,8 @@ thread_yield (void) {
 
 	old_level = intr_disable ();
 	if (curr != idle_thread)
-		list_push_back (&ready_list, &curr->elem);
+		// priority 정렬 삽입
+		list_insert_ordered(&ready_list,&curr->elem,ready_priority_cmp, NULL);
 	do_schedule (THREAD_READY);
 	intr_set_level (old_level);
 }
