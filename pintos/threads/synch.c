@@ -32,6 +32,14 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
+/* Util*/
+static bool waiters_priority_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+	const struct thread *ta = list_entry(a, struct thread, elem);
+	const struct thread *tb = list_entry(b, struct thread, elem);
+  	return ta->priority > tb->priority;   // 높은 priority가 앞
+}
+
+
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -65,11 +73,11 @@ sema_down (struct semaphore *sema) {
 	ASSERT (!intr_context ());
 
 	old_level = intr_disable ();
-	while (sema->value == 0) {
-		list_push_back (&sema->waiters, &thread_current ()->elem);
+
+	if (sema->value == 0){
+		list_insert_ordered(&sema->waiters, &thread_current()->elem,waiters_priority_cmp, NULL);
 		thread_block ();
-	}
-	sema->value--;
+	} else sema->value--;
 	intr_set_level (old_level);
 }
 
