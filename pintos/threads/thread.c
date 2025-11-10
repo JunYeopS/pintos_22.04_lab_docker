@@ -289,6 +289,10 @@ void thread_sleep(int64_t wake_tick) {
 
 	if (wake_tick <= 0) return;
 
+	// 방어적 체크 
+	ASSERT (!intr_context());
+	ASSERT (thread_current() != idle_thread); 
+
     struct thread *cur = thread_current(); // 현재 thread 받기
     enum intr_level old_level;			// 인터럽트 활성상태 저장용
 
@@ -382,7 +386,9 @@ thread_yield (void) {
 	if (curr != idle_thread)
 		// priority 정렬 삽입
 		list_insert_ordered(&ready_list,&curr->elem,ready_priority_cmp, NULL);
-	do_schedule (THREAD_READY);
+		
+		//idle일때 ready 상태는 논리적으로 이상 
+		do_schedule (THREAD_READY);
 	intr_set_level (old_level);
 }
 
@@ -398,10 +404,10 @@ thread_set_priority (int new_priority) {
 	if (!list_empty(&ready_list)) {
 		struct thread *top =
 		list_entry(list_front(&ready_list), struct thread, elem);
+
 		if (top->priority > cur->priority) {
-		intr_set_level(old_level);       // 인터럽트 원복 후
+			
 		thread_yield();            // 양보
-		return;
 		}
 	}
 

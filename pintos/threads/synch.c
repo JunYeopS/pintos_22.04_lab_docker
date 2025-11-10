@@ -74,10 +74,11 @@ sema_down (struct semaphore *sema) {
 
 	old_level = intr_disable ();
 
-	if (sema->value == 0){
+	while (sema->value == 0){
 		list_insert_ordered(&sema->waiters, &thread_current()->elem,waiters_priority_cmp, NULL);
 		thread_block ();
-	} else sema->value--;
+	}
+	sema->value--;
 	intr_set_level (old_level);
 }
 
@@ -117,10 +118,10 @@ sema_up (struct semaphore *sema) {
 	ASSERT (sema != NULL);
 
 	old_level = intr_disable ();
+	sema->value++;
 	if (!list_empty (&sema->waiters))
 		thread_unblock (list_entry (list_pop_front (&sema->waiters),
 					struct thread, elem));
-	sema->value++;
 	intr_set_level (old_level);
 }
 
@@ -243,11 +244,12 @@ lock_held_by_current_thread (const struct lock *lock) {
 
 	return lock->holder == thread_current ();
 }
-
+
 /* One semaphore in a list. */
 struct semaphore_elem {
 	struct list_elem elem;              /* List element. */
 	struct semaphore semaphore;         /* This semaphore. */
+	int priority;   				// 추가 
 };
 
 /* Initializes condition variable COND.  A condition variable
@@ -259,7 +261,11 @@ cond_init (struct condition *cond) {
 
 	list_init (&cond->waiters);
 }
-
+static bool cond_priority_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+	const struct semaphore_elem *sa = list_entry (a, struct semaphore_elem, elem);
+	const struct semaphore_elem *sb = list_entry (b, struct semaphore_elem, elem);
+	return sa->priority > sb->priority;   /* 높은 우선순위가 앞 */
+}
 /* Atomically releases LOCK and waits for COND to be signaled by
    some other piece of code.  After COND is signaled, LOCK is
    reacquired before returning.  LOCK must be held before calling
@@ -289,8 +295,12 @@ cond_wait (struct condition *cond, struct lock *lock) {
 	ASSERT (!intr_context ());
 	ASSERT (lock_held_by_current_thread (lock));
 
+	waiter.priority = thread_current()->priority;
+
 	sema_init (&waiter.semaphore, 0);
-	list_push_back (&cond->waiters, &waiter.elem);
+	// list_push_back(&cond->waiters, &waiter.elem);
+  	list_insert_ordered (&cond->waiters, &waiter.elem, cond_priority_cmp, NULL);
+
 	lock_release (lock);
 	sema_down (&waiter.semaphore);
 	lock_acquire (lock);
