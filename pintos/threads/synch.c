@@ -32,11 +32,16 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
-/* Util*/
+/* Helpers */
 static bool waiters_priority_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
 	const struct thread *ta = list_entry(a, struct thread, elem);
 	const struct thread *tb = list_entry(b, struct thread, elem);
   	return ta->priority > tb->priority;   // 높은 priority가 앞
+}
+static bool donation_priority_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+    const struct thread *ta = list_entry(a, struct thread, donation_elem); 
+    const struct thread *tb = list_entry(b, struct thread, donation_elem);
+    return ta->priority > tb->priority;   // 높은 priority가 앞
 }
 
 
@@ -119,9 +124,14 @@ sema_up (struct semaphore *sema) {
 
 	old_level = intr_disable ();
 	sema->value++;
+
+	// inverstion으로 인한 정렬 깨짐 해결 
+    list_sort(&sema->waiters, waiters_priority_cmp, NULL);
+
 	if (!list_empty (&sema->waiters))
 		thread_unblock (list_entry (list_pop_front (&sema->waiters),
 					struct thread, elem));
+
 	intr_set_level (old_level);
 }
 
@@ -183,6 +193,31 @@ lock_init (struct lock *lock) {
 	sema_init (&lock->semaphore, 1);
 }
 
+/* Helper Method for donate*/
+// donate 받을 thread t 
+void update_priority (struct thread *t){
+
+	int new_priority = t->base_priority;
+
+	// t의 donations 리스트에서 가장 높은 우선순위를 찾기
+	if (!list_empty(&t->donations)){
+		
+		// 대기자중 제일 높은 pirority = donor 
+		struct thread *donor = list_entry(list_begin(&t->donations), struct thread, donation_elem);
+
+		// 기부받은 priority가 base_priority보다 높은지 확인
+		if (donor->priority > new_priority){
+			new_priority = donor->priority;		// 기부 받을 priority 
+		}
+
+	}
+	// 변경이 이루어졌을때 
+	if (t->priority != new_priority){
+		t->priority = new_priority;
+	}
+
+}
+
 /* Acquires LOCK, sleeping until it becomes available if
    necessary.  The lock must not already be held by the current
    thread.
@@ -196,9 +231,25 @@ lock_acquire (struct lock *lock) {
 	ASSERT (lock != NULL);
 	ASSERT (!intr_context ());
 	ASSERT (!lock_held_by_current_thread (lock));
+	
+	struct thread *cur = thread_current ();
+	cur->waiting_lock = lock; 		// cur이 기다리는 lock 기록 
+
+	struct thread *holder = lock->holder;
+
+	if(holder != NULL){ 		// 해당 lock을 누군가 소유 하고 있다면  
+		// 해당 lock 대기열에 추가  (정렬) 
+		list_insert_ordered(&holder->donations, 
+			&cur->donation_elem, waiters_priority_cmp, NULL);
+
+		update_priority(holder);
+	}
 
 	sema_down (&lock->semaphore);
-	lock->holder = thread_current ();
+
+	/* 획득 성공 */
+	cur->waiting_lock = NULL;
+	lock->holder = cur;
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -230,6 +281,31 @@ void
 lock_release (struct lock *lock) {
 	ASSERT (lock != NULL);
 	ASSERT (lock_held_by_current_thread (lock));
+
+	struct thread *cur = thread_current();
+    struct list_elem *top;
+    
+    // Lock 소유자(cur)의 donations 리스트를 순회하며 기부를 반납
+    //    (Lock이 풀렸으므로, 이 Lock 때문에 기부했던 스레드들은 이제 Lock을 기다릴 필요가 없어집니다.)
+    
+    top = list_begin(&cur->donations);
+    while (top != list_end(&cur->donations))
+    {
+        struct thread *donor = list_entry(top, struct thread, donation_elem);
+        
+        // 하나의 lock이 아닌 여러 lock들이 있을때 
+        if (donor->waiting_lock == lock){
+            // 리스트에서 제거하고 다음 요소를 가르킨다
+            top = list_remove(top);
+        }
+        else{
+            // 이 Lock과 관련 없는 다른 기부이므로 다음 요소로 이동
+            top = list_next(top);
+        }
+    }
+
+    // 기부 요소 제거 후, Lock 소유자(cur)의 priority 재갱신 
+    update_priority(cur);
 
 	lock->holder = NULL;
 	sema_up (&lock->semaphore);

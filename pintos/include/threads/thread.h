@@ -95,6 +95,12 @@ struct thread {
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
 
+	/*for donate */
+	int base_priority;			// 기부 받기 전 기존 priority 
+	struct lock *waiting_lock; // thread가 기다리는 lock 
+	struct list donations;  // 기부 기록 용
+	struct list_elem donation_elem;     // 'donations' 리스트에 연결하기 위한 리스트 요소
+
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */

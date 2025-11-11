@@ -400,14 +400,15 @@ thread_set_priority (int new_priority) {
 	struct thread *cur = thread_current();
 	cur->priority = new_priority;  // 우선순위 갱신
 
+	cur->base_priority = new_priority;     /* base만 갱신 */
+
 	//ready_list 최상위 스레드가 나보다 높으면 즉시 양보
 	if (!list_empty(&ready_list)) {
 		struct thread *top =
 		list_entry(list_front(&ready_list), struct thread, elem);
 
 		if (top->priority > cur->priority) {
-			
-		thread_yield();            // 양보
+			thread_yield();            // 양보
 		}
 	}
 
@@ -509,6 +510,11 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
 	t->priority = priority;
 	t->magic = THREAD_MAGIC;
+
+  	/* ----- Priority Donation 관련 필드 초기화 ----- */
+	t->base_priority = priority;
+	t->waiting_lock = NULL;
+	list_init(&t->donations);
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
