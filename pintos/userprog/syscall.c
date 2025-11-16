@@ -41,6 +41,57 @@ syscall_init (void) {
 void
 syscall_handler (struct intr_frame *f UNUSED) {
 	// TODO: Your implementation goes here.
-	printf ("system call!\n");
-	thread_exit ();
+	uint64_t sys_num = f->R.rax;
+
+	switch (sys_num){
+		case SYS_HALT:
+			break;
+		case SYS_EXIT:
+			sys_exit(f->R.rdi);
+			break;
+		case SYS_FORK:
+			break;
+		case SYS_EXEC:
+			break;
+		case SYS_WAIT:
+			break;
+		case SYS_CREATE:
+			break;
+		case SYS_REMOVE:
+			break;
+		case SYS_OPEN:
+			break;
+		case SYS_FILESIZE:
+			break;
+		case SYS_READ:
+			break;
+		case SYS_WRITE:
+			f->R.rax = sys_write(f->R.rdi, f->R.rsi, f->R.rdx);
+			break;
+		case SYS_SEEK:
+			break;
+		case SYS_TELL:
+			break;
+		
+		default:
+			break;
+		}
+
+	// printf ("system call!\n");
+	// thread_exit ();
+}
+
+int sys_write (int fd, const void *buffer, unsigned length){
+	if(fd == 1){
+		putbuf(buffer, length);
+		return length;
+	}
+	return -1;
+}
+
+void sys_exit (int status){
+	// 추후 성공시 return 0 해야한다 
+
+	printf ("%s: exit(%d)\n", thread_name(), status); 
+    thread_exit ();
 }

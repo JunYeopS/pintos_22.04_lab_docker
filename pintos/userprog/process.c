@@ -39,16 +39,25 @@ process_init (void) {
  * thread id, or TID_ERROR if the thread cannot be created.
  * Notice that THIS SHOULD BE CALLED ONCE. */
 tid_t
-process_create_initd (const char *file_name) {
+process_create_initd (const char *cmd_line) {
 	char *fn_copy;
 	tid_t tid;
+
+	char cmd_copy[128];
+	char *file_name, *book_mark;
+
+	//cmd_line 복사 
+	strlcpy(cmd_copy, cmd_line, sizeof(cmd_copy));
+
+	// file_name parsing 
+	file_name = strtok_r(cmd_copy, " ", &book_mark);
 
 	/* Make a copy of FILE_NAME.
 	 * Otherwise there's a race between the caller and load(). */
 	fn_copy = palloc_get_page (0);
 	if (fn_copy == NULL)
 		return TID_ERROR;
-	strlcpy (fn_copy, file_name, PGSIZE);
+	strlcpy (fn_copy, cmd_line, PGSIZE);
 
 	/* Create a new thread to execute FILE_NAME. */
 	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
@@ -205,6 +214,8 @@ process_wait (tid_t child_tid UNUSED) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
+	timer_sleep(700);
+
 	return -1;
 }
 
@@ -351,9 +362,8 @@ load (const char *cmd_line, struct intr_frame *if_) {
 	} else goto done;
 
 	// 나머지 인자들 parsing 
-	while (token != NULL) {
-		token = strtok_r(NULL, " ", &book_mark);
-		argv[argc++] = token;
+	while ((token = strtok_r(NULL, " ", &book_mark)) != NULL) {
+			argv[argc++] = token;
 	}
 
 	/* Allocate and activate page directory. */
