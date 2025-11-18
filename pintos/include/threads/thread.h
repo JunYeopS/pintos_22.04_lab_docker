@@ -101,6 +101,8 @@ struct thread {
 	struct list donations;  // 기부 기록 용
 	struct list_elem donation_elem;     // 'donations' 리스트에 연결하기 위한 리스트 요소
 
+	//fd table
+	struct file *fd_table[64];
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */

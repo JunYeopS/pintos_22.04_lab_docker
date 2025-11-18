@@ -19,7 +19,8 @@ void sys_exit (int status);
 void sys_halt (void);
 int sys_write (int fd, const void *buffer, unsigned length);
 bool sys_create (char *file, unsigned initial_size);
-
+static void check_user_str(char *str);
+int open(char *file);
 
 /* System call.
  *
@@ -68,15 +69,19 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			break;
 		case SYS_WAIT:
 			break;
-		case SYS_CREATE:
+		case SYS_CREATE:{
 			char *file = f->R.rdi;
             unsigned initial_size = f->R.rsi;
             f->R.rax = sys_create (file, initial_size);
+		}
 			break;
 		case SYS_REMOVE:
 			break;
-		case SYS_OPEN:
+		case SYS_OPEN:{
+			char *file = f->R.rdi;
+			f->R.rax = sys_open(file);
 			break;
+		}
 		case SYS_FILESIZE:
 			break;
 		case SYS_READ:
@@ -145,4 +150,50 @@ bool sys_create (char *file, unsigned initial_size){
 
     return success;		
 
+}
+
+static void check_user_str(char *str){
+	char *cur = str;
+
+	// 포인터자체가 NULL
+	if(str == NULL){
+		sys_exit(-1);
+	}
+	// 문자열을 한 바이트씩 순회하며 모든 주소 검사
+	while (true) {
+        // 현재 pointer가 가리키는 '주소'가 유효한지 검사
+    	if (!is_user_vaddr(cur) || pml4_get_page(thread_current()->pml4, cur) == NULL) {
+            sys_exit(-1);
+        }
+
+        // 문자열 끝 확인 
+        if (*cur == '\0') {
+            break;
+        }
+		// 다음 문자열 포인터 
+        cur++;
+    }
+}
+
+int sys_open(char *file){
+	int fd;
+
+	// 유효성 검사
+	check_user_str(file);
+
+	struct thread *t = thread_current();
+
+	// 0,1,2 는 표준 3부터 탐색 
+	for (int i = 3; i <= 64; i ++){
+		
+		if (t->fd_table[i] == NULL){
+			fd = filesys_open(file);
+		
+			if (fd == NULL){
+				return -1;
+			}
+			t->fd_table[i] = fd; 
+			return fd;
+		} 
+	}
 }
