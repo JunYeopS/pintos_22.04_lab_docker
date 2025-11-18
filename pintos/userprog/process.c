@@ -39,16 +39,25 @@ process_init (void) {
  * thread id, or TID_ERROR if the thread cannot be created.
  * Notice that THIS SHOULD BE CALLED ONCE. */
 tid_t
-process_create_initd (const char *file_name) {
+process_create_initd (const char *cmd_line) {
 	char *fn_copy;
 	tid_t tid;
+
+	char cmd_copy[128];
+	char *file_name, *book_mark;
+
+	//cmd_line 복사 
+	strlcpy(cmd_copy, cmd_line, sizeof(cmd_copy));
+
+	// file_name parsing 
+	file_name = strtok_r(cmd_copy, " ", &book_mark);
 
 	/* Make a copy of FILE_NAME.
 	 * Otherwise there's a race between the caller and load(). */
 	fn_copy = palloc_get_page (0);
 	if (fn_copy == NULL)
 		return TID_ERROR;
-	strlcpy (fn_copy, file_name, PGSIZE);
+	strlcpy (fn_copy, cmd_line, PGSIZE);
 
 	/* Create a new thread to execute FILE_NAME. */
 	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
@@ -162,12 +171,13 @@ error:
  * Returns -1 on fail. */
 int
 process_exec (void *f_name) {
-	char *file_name = f_name;
+	char *file_name = f_name; 		//void to char 
 	bool success;
 
 	/* We cannot use the intr_frame in the thread structure.
 	 * This is because when current thread rescheduled,
 	 * it stores the execution information to the member. */
+	/* 사용자 모드로 전환하기 위해 레지스터를 수동 조작 및 초기화 (Fake Interrupt Frame) */	
 	struct intr_frame _if;
 	_if.ds = _if.es = _if.ss = SEL_UDSEG;
 	_if.cs = SEL_UCSEG;
@@ -180,7 +190,7 @@ process_exec (void *f_name) {
 	success = load (file_name, &_if);
 
 	/* If load failed, quit. */
-	palloc_free_page (file_name);
+	palloc_free_page (file_name); 	//실행 파일 이름/인자 문자열을 저장하기 위해 커널이 이전에 할당했던 메모리 페이지를 해제
 	if (!success)
 		return -1;
 
@@ -204,6 +214,8 @@ process_wait (tid_t child_tid UNUSED) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
+	timer_sleep(100);
+
 	return -1;
 }
 
@@ -321,15 +333,41 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
  * and its initial stack pointer into *RSP.
  * Returns true if successful, false otherwise. */
 static bool
-load (const char *file_name, struct intr_frame *if_) {
+load (const char *cmd_line, struct intr_frame *if_) {
 	struct thread *t = thread_current ();
 	struct ELF ehdr;
 	struct file *file = NULL;
 	off_t file_ofs;
 	bool success = false;
 	int i;
+	
+	char *file_name = NULL;
+	char *argv[64]; 
+	int argc = 0; 
+	char *token, *book_mark;
+
+	// 메모리 낭비 // palloc 써서 메모리 할당을 하자  
+	char cmd_copy[64];
+	
+	//cmd_line 복사 
+	strlcpy(cmd_copy, cmd_line, sizeof(cmd_copy));
+
+	// file_name 만 parsing 
+	token = strtok_r(cmd_copy, " ", &book_mark);
+	
+	if (token != NULL){
+		file_name = token; 		// 첫번째 인자 file_name
+		argv[argc] = file_name; // argv[0] = filename 
+		argc++; 
+	} else goto done;
+
+	// 나머지 인자들 parsing 
+	while ((token = strtok_r(NULL, " ", &book_mark)) != NULL) {
+			argv[argc++] = token;
+	}
 
 	/* Allocate and activate page directory. */
+	//PML4 생성 및 활성화
 	t->pml4 = pml4_create ();
 	if (t->pml4 == NULL)
 		goto done;
@@ -343,6 +381,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	}
 
 	/* Read and verify executable header. */
+	//ELF 헤더 검증
 	if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
 			|| memcmp (ehdr.e_ident, "\177ELF\2\1\1", 7)
 			|| ehdr.e_type != 2
@@ -355,6 +394,10 @@ load (const char *file_name, struct intr_frame *if_) {
 	}
 
 	/* Read program headers. */
+	/*프로그램 세그먼트 로드
+		Program header를 순회하면 세그먼트(phdr)들을 읽으면 p_type을 확인해서 PT_LOAD를 찾는다
+		PT_LOAD 처리 : 메모리에 적재(Load)되어야 하는 세그먼트 (코드 (.text), 데이터 (.data, .bss) 등등)
+	*/
 	file_ofs = ehdr.e_phoff;
 	for (i = 0; i < ehdr.e_phnum; i++) {
 		struct Phdr phdr;
@@ -397,7 +440,7 @@ load (const char *file_name, struct intr_frame *if_) {
 						read_bytes = 0;
 						zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
 					}
-					if (!load_segment (file, file_page, (void *) mem_page,
+					if (!load_segment (file, file_page, (void *) mem_page, // 계산된 정보를 바탕으로 가상 메모리 페이지에 세그먼트를 매핑하고 로드
 								read_bytes, zero_bytes, writable))
 						goto done;
 				}
@@ -416,6 +459,44 @@ load (const char *file_name, struct intr_frame *if_) {
 
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
+	
+	// 배열 끝에 null 추가하기 -> Argv[4] = null
+	char *argv_ptr[64];
+
+	// 실제 제이터 push 
+	for (int i = argc-1; i >= 0; i--){
+		int len = strlen(argv[i]) +1 ;   // 문자열 크기 (\0)으로인한 +1 
+		if_->rsp -= len;                 // 스택 공간 확보
+		memcpy((void *)if_->rsp, argv[i], len);  // 데이터 넣기  // check
+		argv_ptr[i] = (char *)if_->rsp;
+	}
+
+	// pading //set stack 
+	uint8_t word_align = if_->rsp % 8;
+	if (word_align != 0) {
+		if_->rsp -= word_align; // 나머지 만큼 padding 
+   		memset((void *)if_->rsp, 0, word_align);   // 0 채우기
+	}
+
+	argv_ptr[argc] = NULL;
+
+	//argv[4]
+	if_->rsp -= sizeof(char *);
+	memset((void *)if_->rsp, 0, sizeof(char *)); 
+
+	// 주소 push 
+	for (int i = argc - 1; i >= 0; i--) {
+		if_->rsp -= sizeof(char *);
+		memcpy((void *)if_->rsp, &argv_ptr[i], sizeof(char *));            
+	}
+
+	if_->R.rdi = argc;	
+    if_->R.rsi = if_->rsp;
+
+	// fake return address
+	if_->rsp -= sizeof(void *);
+	memset((void *)if_->rsp, 0, sizeof(void *));
+
 
 	success = true;
 
