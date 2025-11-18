@@ -214,7 +214,7 @@ process_wait (tid_t child_tid UNUSED) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
-	timer_sleep(700);
+	timer_sleep(100);
 
 	return -1;
 }
@@ -341,13 +341,13 @@ load (const char *cmd_line, struct intr_frame *if_) {
 	bool success = false;
 	int i;
 	
-	char *file_name;
-	char *argv[128]; 
+	char *file_name = NULL;
+	char *argv[64]; 
 	int argc = 0; 
 	char *token, *book_mark;
 
 	// 메모리 낭비 // palloc 써서 메모리 할당을 하자  
-	char cmd_copy[128];
+	char cmd_copy[64];
 	
 	//cmd_line 복사 
 	strlcpy(cmd_copy, cmd_line, sizeof(cmd_copy));
@@ -461,7 +461,7 @@ load (const char *cmd_line, struct intr_frame *if_) {
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
 	
 	// 배열 끝에 null 추가하기 -> Argv[4] = null
-	char *argv_ptr[128];
+	char *argv_ptr[64];
 
 	// 실제 제이터 push 
 	for (int i = argc-1; i >= 0; i--){
@@ -477,6 +477,8 @@ load (const char *cmd_line, struct intr_frame *if_) {
 		if_->rsp -= word_align; // 나머지 만큼 padding 
    		memset((void *)if_->rsp, 0, word_align);   // 0 채우기
 	}
+
+	argv_ptr[argc] = NULL;
 
 	//argv[4]
 	if_->rsp -= sizeof(char *);
