@@ -9,6 +9,7 @@
 #include "intrinsic.h"
 #include "threads/synch.h"
 #include "filesys/filesys.h"
+#include "filesys/file.h"
 
 static struct lock filesys_lock;
 
@@ -20,7 +21,8 @@ void sys_halt (void);
 int sys_write (int fd, const void *buffer, unsigned length);
 bool sys_create (char *file, unsigned initial_size);
 static void check_user_str(char *str);
-int open(char *file);
+int sys_open(char *file);
+void sys_close (int fd);
 
 /* System call.
  *
@@ -93,7 +95,10 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			break;
 		case SYS_TELL:
 			break;
-		
+		case SYS_CLOSE:{
+			sys_close(f->R.rdi);
+			break;
+		}
 		default:
 			break;
 		}
@@ -176,24 +181,53 @@ static void check_user_str(char *str){
 }
 
 int sys_open(char *file){
-	int fd;
 
 	// 유효성 검사
 	check_user_str(file);
 
 	struct thread *t = thread_current();
 
-	// 0,1,2 는 표준 3부터 탐색 
-	for (int i = 3; i <= 64; i ++){
-		
-		if (t->fd_table[i] == NULL){
-			fd = filesys_open(file);
-		
-			if (fd == NULL){
-				return -1;
-			}
-			t->fd_table[i] = fd; 
-			return fd;
-		} 
+	//실제 파일 열기 (락으로 보호)
+	lock_acquire(&filesys_lock);
+    struct file *opened_file = filesys_open(file);
+    lock_release(&filesys_lock);
+
+	// 유효성 검사 
+	if (opened_file == NULL){
+		return -1;
 	}
+
+	// 0,1,2 는 표준 3부터 탐색 
+    for (int i = 3; i < 64; i++) {
+        if (t->fd_table[i] == NULL) {
+            t->fd_table[i] = opened_file;
+            return i; // fd
+        }
+	}
+	// 빈 곳 없으면 파일 닫고 실패 처리
+	file_close(opened_file);
+	return -1;
+
+}
+
+void sys_close (int fd){
+	struct thread *t = thread_current();
+
+	//유효성 검사 
+	if (fd < 3 || fd>=64){
+		sys_exit(-1);
+	}
+ 
+	struct file *cur_file = t->fd_table[fd];
+
+	// 해당 fd 파일이 null이면 조기 return
+	if (cur_file == NULL) return;
+	
+	// 파일 닫기 (락으로 보호)
+	lock_acquire(&filesys_lock);
+	file_close(cur_file);
+    lock_release(&filesys_lock);
+
+	t->fd_table[fd] = NULL;
+
 }
