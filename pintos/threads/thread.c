@@ -517,7 +517,7 @@ init_thread (struct thread *t, const char *name, int priority) {
 	list_init(&t->donations);
 
 	//fd_table 초기화 
-	for (int i = 3; i < 64; i++) {
+	for (int i = 2; i < 64; i++) {
         t->fd_table[i] = NULL;
     }
 }

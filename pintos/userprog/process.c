@@ -229,7 +229,7 @@ process_exit (void) {
 	 * TODO: We recommend you to implement process resource cleanup here. */
 
 	/* 파일 디스크립터 정리 */
-    for (int i = 3; i < 64; i++) {
+    for (int i = 2; i < 64; i++) {
 		sys_close(i);
     }
 
