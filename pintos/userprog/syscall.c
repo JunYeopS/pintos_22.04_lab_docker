@@ -7,10 +7,17 @@
 #include "userprog/gdt.h"
 #include "threads/flags.h"
 #include "intrinsic.h"
+#include "threads/synch.h"
+#include "filesys/filesys.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
+static struct lock filesys_lock;
 
+static void check_address(const void *addr);
+static void handler_exit(int status);
+static int handler_write(int fd, const void *buffer, unsigned size);
+static bool handler_create(const char *file, unsigned initial_size);
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -30,6 +37,7 @@ syscall_init (void) {
 			((uint64_t)SEL_KCSEG) << 32);
 	write_msr(MSR_LSTAR, (uint64_t) syscall_entry);
 
+	lock_init(&filesys_lock); // 락 초기화
 	/* The interrupt service rountine should not serve any interrupts
 	 * until the syscall_entry swaps the userland stack to the kernel
 	 * mode stack. Therefore, we masked the FLAG_FL. */
@@ -41,6 +49,253 @@ syscall_init (void) {
 void
 syscall_handler (struct intr_frame *f UNUSED) {
 	// TODO: Your implementation goes here.
-	printf ("system call!\n");
-	thread_exit ();
+	int syscall_num = f->R.rax;
+	// f->R.rdi = 첫 번째 인자 -> uint값(fd)
+	// f->R.rsi = 두 번째 인자 -> 문자열의 주소값(주소)
+	// f->R.rdx = 세 번째 인자 -> 사이즈(size)
+
+	switch (syscall_num)
+	{
+		case SYS_HALT:
+			handler_halt();
+			break;
+		// case SYS_EXEC:
+		// 	hander_exec();
+		// 	break;
+		case SYS_EXIT:
+			handler_exit(f->R.rdi);
+			break;
+		// case SYS_FORK:
+		// 	break;
+		// case SYS_WAIT:
+		// 	break;
+		case SYS_CREATE:
+			f->R.rax = handler_create((const char*)f->R.rdi, (unsigned)f->R.rsi);
+			break;
+		// case SYS_REMOVE:
+		// 	break;
+		case SYS_OPEN:
+			f->R.rax = handler_open((const char*)f->R.rdi);
+			break;
+		case SYS_FILESIZE:
+			f->R.rax = handler_filesize((int)f->R.rdi);
+			break;
+		case SYS_READ:
+			f->R.rax = handler_read((int)f->R.rdi, (void*)f->R.rsi, (unsigned)f->R.rdx);
+			break;
+		case SYS_WRITE:
+			f->R.rax = handler_write((int)f->R.rdi, (const void*)f->R.rsi, (unsigned)f->R.rdx);
+			break;
+		// case SYS_SEEK:
+		// 	break;
+		// case SYS_TELL:
+		// 	break;
+		case SYS_CLOSE:
+			f->R.rax = handler_close((int)f->R.rdi);
+			break;
+		default:
+			handler_exit(-1);
+			break;
+	}
 }
+
+// 주소가 유효한지 유효성을 검사하는 함수
+static void check_address(const void *addr){
+	struct thread *cur = thread_current();
+
+    if (addr == NULL || is_kernel_vaddr(addr) || pml4_get_page(cur->pml4, addr) == NULL){
+        handler_exit(-1);
+    }
+}
+
+static void check_string(const char *str){
+	check_address(str);
+
+	while(*str != '\0'){
+		str++;
+		check_address(str);
+	}
+	
+}
+
+int give_fdt(struct file *file) {
+    struct thread *cur = thread_current();
+    struct file **fdt1 = cur->fdt_table;
+
+    for (int fd = 2; fd < 512; fd++) {
+        // 현재 검사하는 슬롯(fdt[fd])이 비어있는지(NULL) 확인
+        if (fdt1[fd] == NULL) {
+            fdt1[fd] = file;
+            return fd;
+        }
+    }
+    return -1;
+}
+
+// halt는 return 값이 존재하지 않는다.
+void handler_halt(void){
+	power_off();
+}
+
+// 현재 동작중인 유저 프로그램을 종료한다. 부모 프로세스가 현재 유저 프로그램의
+// 종료를 기디리던 중이라면, 종료되면서 상태를 반환한다.
+void handler_exit(int status){
+	struct thread *cur = thread_current();
+	cur->exit_status = status; // 자식 프로세스의 종료상태 저장
+	printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
+	thread_exit();
+}
+
+int handler_write(int fd, const void *buffer, unsigned size){
+	if (size == 0) return 0;
+	// 버퍼의 시작 주소 확인
+	check_address(buffer);
+	// 버퍼의 마지막 바이트 주소 확인
+	check_address((const char*)buffer + size - 1);
+	
+	if (fd == 1){
+		putbuf(buffer, size);
+		return size;
+	} else if (fd == 0){
+		return -1;
+	} else {
+		// 파일 쓰기
+        struct thread *cur = thread_current();
+        struct file **fdt = cur->fdt_table;
+
+        if (fd < 2 || fd >= 512 || fdt[fd] == NULL) {
+            return -1;
+        }
+
+        struct file *file = fdt[fd];
+
+        lock_acquire(&filesys_lock);
+        int bytes_written = file_write(file, buffer, size);
+        lock_release(&filesys_lock);
+
+        return bytes_written;
+	}
+}
+
+bool handler_create(const char *file, unsigned initial_size) {
+	check_string(file);
+	if (file[0] == '\0') return false;
+
+	lock_acquire(&filesys_lock);
+	bool is_create = filesys_create(file, initial_size);
+	lock_release(&filesys_lock);
+
+	return is_create;
+}
+
+int handler_open(const char* file){
+	check_string(file);
+
+	lock_acquire(&filesys_lock);
+	struct file *cur_file = filesys_open(file);
+	lock_release(&filesys_lock);
+
+	if(cur_file == NULL){
+		return -1;
+	}
+	
+	int fd = give_fdt(cur_file);
+
+	if (fd == -1){
+		file_close(cur_file);
+	}
+
+	return fd;
+}
+
+void handler_close(int fd){ 
+    struct thread *cur = thread_current();
+    struct file **fdt = cur->fdt_table;
+
+    if(fd < 2 || fd >= 512 || fdt[fd] == NULL){
+        return;
+    }
+
+	lock_acquire(&filesys_lock);
+    file_close(fdt[fd]);
+    lock_release(&filesys_lock);
+
+	fdt[fd] = NULL;
+}
+
+int handler_read(int fd, void* buffer, unsigned size){
+	
+	if(size == 0) return 0;
+	check_address(buffer);
+	check_address((char*)buffer + size -1);
+
+	char* ptr = (char*) buffer;
+	int bytes_read = 0;
+
+	// fd 가 표준 입력이라면 파일시스템 말고
+	// input_getc()함수를 사용해서 키보드의 입력을 직접 받아야 한다.
+	if (fd == 0)
+	{
+		for (unsigned i = 0; i < size; i++)
+		{
+			char key = input_getc();
+			*(ptr+i) = key;
+			bytes_read++;
+			if (key == '\0') break;
+		}
+		return bytes_read;
+	}
+
+	if (fd == 1) {
+		return -1;
+	}
+	
+	struct thread *cur = thread_current();
+	struct file **fdt = cur->fdt_table;
+
+    if (fd < 2 || fd >= 512 || fdt[fd] == NULL) {
+        return -1;
+    }
+
+	struct file *cur_file = fdt[fd];
+
+	lock_acquire(&filesys_lock);
+	bytes_read = file_read(cur_file, buffer, size);
+	lock_release(&filesys_lock);
+
+	return bytes_read;
+}
+
+int handler_filesize(int fd){
+	struct thread *cur = thread_current();
+	struct file **fdt = cur->fdt_table;
+
+	if (fd < 2 || fd >= 512 || fdt[fd] == NULL){
+		return -1;
+	}
+
+	struct file *cur_file = fdt[fd];
+
+	lock_acquire(&filesys_lock);
+	int size = file_length(cur_file);
+	lock_release(&filesys_lock);
+
+	return size;
+}
+// halt랑 exit
+// enum {
+// 	/* Projects 2 and later. */
+// 	SYS_HALT,                   /* Clone current process. */
+// 	SYS_EXEC,                     /* Halt the operating system. */
+// 	SYS_EXIT,                   /* Terminate this process. */
+// 	SYS_FORK,                 /* Switch current process. */
+// 	SYS_WAIT,                   /* Wait for a child process to die. */
+// 	SYS_CREATE,                 /* Create a file. */
+// 	SYS_REMOVE,                 /* Delete a file. */
+// 	SYS_OPEN,                   /* Open a file. */
+// 	SYS_FILESIZE,               /* Obtain a file's size. */
+// 	SYS_READ,                   /* Read from a file. */
+// 	SYS_WRITE,                  /* Write to a file. */
+// 	SYS_SEEK,                   /* Change position in a file. */
+// 	SYS_TELL,                   /* Report current position in a file. */
+// 	SYS_CLOSE,                  /* Close a file. */

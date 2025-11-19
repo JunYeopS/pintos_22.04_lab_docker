@@ -21,6 +21,17 @@
         "streambuf": "c",
         "utility": "c",
         "*.inc": "c",
-        "stdint.h": "c"
-    }
+        "stdint.h": "c",
+        "synch.h": "c",
+        "loader.h": "c",
+        "intrinsic.h": "c",
+        "cstdlib": "c",
+        "debug.h": "c",
+        "file.h": "c",
+        "deque": "c",
+        "iterator": "c",
+        "string_view": "c",
+        "syscall.h": "c"
+    },
+    "C_Cpp.errorSquiggles": "disabled"
 }

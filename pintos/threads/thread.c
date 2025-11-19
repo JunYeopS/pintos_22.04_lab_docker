@@ -735,7 +735,6 @@ void donate_priority(void)
 {
 	int depth;
 	struct thread *t = thread_current();
-
 	for (depth = 0; depth < 8; depth++)
 	{
 		// NULL 이 아니면 스레드가 lock이 걸려있다는 소리.
@@ -761,10 +760,9 @@ void remove_donation_list_lock (struct lock *lock)
 	struct thread *t = thread_current();
 
 	// 처음부터 끝까지 돌면서 리스트에 있는 스레드가 priority를 빌려준 이유, 즉 wait_on_lock에
-	// 이번에 release하는 lock이라면 해당하는 스레드를 dona리스트에서 삭제
-	if (!list_empty(&t->donation))
-	{
-		for (e = list_begin(&t->donation); e != list_end(&t->donation); e = list_next (e))
+	// 이번에 release하는 lock이라면 해당하는 스레드를 donation 리스트에서 삭제
+	if (!list_empty(&t->donation)){
+		for (e = list_begin(&t->donation); e != list_end(&t->donation); e = list_next(e))
 			{
 				struct thread *x = list_entry (e, struct thread, donation_elem);
 				if (x->waiting_on_lock == lock)
@@ -777,7 +775,7 @@ void remove_donation_list_lock (struct lock *lock)
 
 // doantion 리스트가 비어있다면 init_priority로 설정되고 donation 리스트에
 // 스레드가 남아있다면, 남아있는 스레드 중에서 가장 높은 스레드를 가져와야 한다.
-// list_sort를 사용하여 우선순위 내림차순 정렬 후 맨앞 스레드우선순위와
+// 정렬된 리스트에서 우선순위 내림차순 정렬 후 맨앞 스레드우선순위와
 // base_priority와 비교하여 더 큰 priority를 적용
 void refresh_priority (struct thread *t)
 {
@@ -785,7 +783,6 @@ void refresh_priority (struct thread *t)
 	
 	if (!list_empty(&t->donation))
 	{
-		list_sort (&t->donation, thread_compare_donate_priority, 0);
 		struct thread *front = list_entry (list_front (&t->donation), struct thread, donation_elem);
 		if (front->priority > t->priority)
 		{

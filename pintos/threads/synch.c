@@ -74,12 +74,6 @@ sema_down (struct semaphore *sema) {
         list_insert_ordered (&sema->waiters, &thread_current()->elem, thread_priority_cmp, NULL);
         /* 스레드 블락 (잠들기) */
         thread_block ();
-        
-        /* * WAKE-UP POINT:
-         * sema_up()에 의해 여기서 깨어남.
-         * sema_up이 자원(token)을 넘겨준 것이므로
-         * value를 다시 확인하거나 decrement할 필요가 없음.
-         */
     }
 	intr_set_level (old_level);
 }
@@ -203,6 +197,7 @@ lock_acquire (struct lock *lock) {
 	ASSERT (!intr_context ());
 	ASSERT (!lock_held_by_current_thread (lock));
 
+   enum intr_level old_level = intr_disable();
    struct thread *t = thread_current();
 
    // 락의 홀더가 있고, 내 우선 순위가 더 높으면 기부
@@ -221,6 +216,7 @@ lock_acquire (struct lock *lock) {
 
    // 이제 내가 락의 새 주인
 	lock->holder = t;
+   intr_set_level (old_level);
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -257,15 +253,9 @@ lock_release (struct lock *lock) {
    refresh_priority(thread_current());
    
    struct thread *t = thread_current();
-   
 	lock->holder = NULL;
 
 	sema_up (&lock->semaphore);
-   /* * 락을 해제하고 우선순위가 낮아졌을 수 있으므로,
-    * ready_list에서 가장 우선순위가 높은 스레드와 자신을 비교하여
-    * 더 높은 스레드가 있다면 CPU를 양보합니다.
-    */
-   thread_check_yield_on_priority_drop();
 }
 
 /* Returns true if the current thread holds LOCK, false

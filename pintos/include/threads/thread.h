@@ -95,6 +95,10 @@ struct thread {
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
 
+	// 파일 디스크립터 테이블
+	struct file **fdt_table;
+	// 자식 프로세스의 상태 정수형으로 표현
+	int exit_status;
 	// 기부받기 전의 원래 스레드의 우선순위를 저장
 	int base_priority;
 	// 스레드가 현재 획득을 기다리고 있는 락의 주소. (기다리는게 없으면 NULL)
