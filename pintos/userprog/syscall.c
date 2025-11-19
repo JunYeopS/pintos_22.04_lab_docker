@@ -10,7 +10,7 @@
 #include "threads/synch.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
-
+#include "threads/vaddr.h" // fir PGSIZE
 static struct lock filesys_lock;
 
 void syscall_entry (void);
@@ -23,9 +23,11 @@ bool sys_create (char *file, unsigned initial_size);
 static void check_user_str(char *str);
 int sys_open(char *file);
 void sys_close (int fd);
-int read (int fd, void *buffer, unsigned size);
-int filesize (int fd);
-int write (int fd, const void *buffer, unsigned size);
+int sys_read (int fd, void *buffer, unsigned size);
+int sys_filesize (int fd);
+int sys_write (int fd, const void *buffer, unsigned size);
+
+#define FD_CAP (PGSIZE / sizeof(struct file *))
 
 /* System call.
  *
@@ -105,7 +107,7 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			void *buffer = f->R.rsi;
 			unsigned size = f->R.rdx;
 
-			f->R.rax = sys_write(f->R.rdi, f->R.rsi, f->R.rdx);
+			f->R.rax = sys_write(fd, buffer, size);
 			break;
 		}
 		case SYS_SEEK:
@@ -147,7 +149,7 @@ int sys_write (int fd, const void *buffer, unsigned size){
 		return size;
 	}
 
-	if (fd <= 0 || fd >= 64) {
+	if (fd <= 0 || fd >= FD_CAP) {
         return -1; 
     }
 
@@ -238,7 +240,7 @@ int sys_open(char *file){
 	}
 
 	// 0,1는 표준 2부터 탐색 
-    for (int i = 2; i < 64; i++) {
+    for (int i = 2; i < FD_CAP; i++) {
         if (t->fd_table[i] == NULL) {
             t->fd_table[i] = opened_file;
             return i; // fd
@@ -254,7 +256,7 @@ void sys_close (int fd){
 	struct thread *t = thread_current();
 
 	//유효성 검사 
-	if (fd < 2 || fd>=64){
+	if (fd < 2 || fd>=FD_CAP){
 		sys_exit(-1);
 	}
  
@@ -283,7 +285,7 @@ void check_user_buffer(void *buffer,unsigned size){
 }
 
 int sys_filesize (int fd){	
-    if (fd < 2 || fd >= 64) {  
+    if (fd < 2 || fd >= FD_CAP) {  
         return -1;
     }
 
@@ -319,7 +321,7 @@ int sys_read (int fd, void *buffer, unsigned size){
 		return (int) byte_read;
 	}
 
-	if (fd == 1 || fd < 0 || fd >= 64) {
+	if (fd == 1 || fd < 0 || fd >= FD_CAP) {
         return -1; 
     }
 

@@ -31,6 +31,15 @@ static void __do_fork (void *);
 static void
 process_init (void) {
 	struct thread *current = thread_current ();
+
+	//fd_table 0으로 초기화 
+	current->fd_table = palloc_get_page(PAL_ZERO);
+	// 실패시 메모리 해제 
+	if (current->fd_table == NULL){
+		palloc_free_page(current);
+		return -1;
+	}
+	current->fd_table = NULL;
 }
 
 /* Starts the first userland program, called "initd", loaded from FILE_NAME.
@@ -229,8 +238,15 @@ process_exit (void) {
 	 * TODO: We recommend you to implement process resource cleanup here. */
 
 	/* 파일 디스크립터 정리 */
-    for (int i = 2; i < 64; i++) {
-		sys_close(i);
+    if (curr->fd_table != NULL) {
+        for (int i = 2; i < PGSIZE / sizeof(struct file *); i++) {
+            if (curr->fd_table[i] != NULL) {
+                file_close(curr->fd_table[i]);
+                curr->fd_table[i] = NULL;
+            }
+        }
+        palloc_free_page(curr->fd_table);
+        curr->fd_table = NULL;
     }
 
 	process_cleanup ();

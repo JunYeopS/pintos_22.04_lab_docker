@@ -516,10 +516,6 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->waiting_lock = NULL;
 	list_init(&t->donations);
 
-	//fd_table 초기화 
-	for (int i = 2; i < 64; i++) {
-        t->fd_table[i] = NULL;
-    }
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
