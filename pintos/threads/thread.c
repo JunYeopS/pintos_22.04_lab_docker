@@ -215,6 +215,10 @@ thread_create (const char *name, int priority,
 	init_thread (t, name, priority);
 	tid = t->tid = allocate_tid ();
 
+	// parent–child 연결
+	struct thread *cur = thread_current();
+	list_push_back(&cur->children, &t->child_elem);
+
 	/* Call the kernel_thread if it scheduled.
 	 * Note) rdi is 1st argument, and rsi is 2nd argument. */
 	t->tf.rip = (uintptr_t) kernel_thread;
@@ -515,6 +519,11 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->base_priority = priority;
 	t->waiting_lock = NULL;
 	list_init(&t->donations);
+
+   	/* ----- fork 동기화 관련 필드 초기화 ----- */
+	list_init (&t->children);        // 자식 리스트 초기화
+    sema_init (&t->fork_sema, 0);
+    t->fork_success = false;
 
 }
 

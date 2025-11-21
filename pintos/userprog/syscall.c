@@ -10,7 +10,8 @@
 #include "threads/synch.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
-#include "threads/vaddr.h" // fir PGSIZE
+#include "threads/vaddr.h" // for PGSIZE
+#include "userprog/process.h"
 static struct lock filesys_lock;
 
 void syscall_entry (void);
@@ -70,8 +71,11 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_EXIT:
 			sys_exit(f->R.rdi);
 			break;
-		case SYS_FORK:
+		case SYS_FORK:{
+			const char *thread_name = f->R.rdi;
+			f->R.rax = process_fork(thread_name, f);
 			break;
+		}
 		case SYS_EXEC:
 			break;
 		case SYS_WAIT:
@@ -92,8 +96,8 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_FILESIZE:{
 			int fd = f->R.rdi;
 			f->R.rax = sys_filesize(fd);
-		}
 			break;
+		}
 		case SYS_READ:{
 			int fd = f->R.rdi;
 			void *buffer = f->R.rsi;
