@@ -12,7 +12,7 @@
 #include "filesys/file.h"
 #include "threads/vaddr.h" // for PGSIZE
 #include "userprog/process.h"
-static struct lock filesys_lock;
+struct lock filesys_lock;
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
@@ -78,8 +78,11 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		}
 		case SYS_EXEC:
 			break;
-		case SYS_WAIT:
+		case SYS_WAIT:{
+			tid_t child_tid = f->R.rdi;
+    		f->R.rax = process_wait (child_tid);	
 			break;
+		}
 		case SYS_CREATE:{
 			char *file = f->R.rdi;
             unsigned initial_size = f->R.rsi;
@@ -131,8 +134,16 @@ syscall_handler (struct intr_frame *f UNUSED) {
 }
 
 void sys_exit (int status){
-	// 임시 exit 
-	printf ("%s: exit(%d)\n", thread_name(), status); 
+    struct thread *cur = thread_current();
+	
+	/* child_info에 종료 상태 기록 + 부모 깨우기 */
+    if (cur->child_info != NULL) {
+        cur->child_info->exit_status = status;
+        cur->child_info->is_exited = true;
+    }
+	
+	printf ("%s: exit(%d)\n", thread_name(), status);
+
     thread_exit ();
 }
 

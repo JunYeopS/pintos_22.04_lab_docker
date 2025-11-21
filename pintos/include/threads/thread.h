@@ -10,7 +10,6 @@
 #include "vm/vm.h"
 #endif
 
-
 /* States in a thread's life cycle. */
 enum thread_status {
 	THREAD_RUNNING,     /* Running thread. */
@@ -107,11 +106,7 @@ struct thread {
  
     /* 자식 관리용 */
     struct list children;       // 자식들 리스트
-    struct list_elem child_elem;
-
-	/* for fork */
-    struct semaphore fork_sema;  
-    bool fork_success; 
+    struct child_info *child_info;
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */

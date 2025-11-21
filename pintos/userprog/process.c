@@ -19,6 +19,7 @@
 #include "threads/vaddr.h"
 #include "intrinsic.h"
 #include "threads/synch.h" // lock 
+extern struct lock filesys_lock;
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -29,8 +30,6 @@ static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
-
-static struct lock filesys_lock;
 
 /* General process initializer for initd and other process. */
 static void
@@ -98,11 +97,16 @@ initd (void *f_name) {
 tid_t
 process_fork (const char *name, struct intr_frame *if_) {
 	struct thread *parent = thread_current();
+
 	struct fork_aux_arg *aux = palloc_get_page(PAL_ZERO);
+    if (aux == NULL)
+        return TID_ERROR;
 
 	aux->parent = parent;
-	aux->parent_if = *if_;
-	
+	aux->parent_if = *if_;	//값 복사
+	sema_init(&aux->fork_sema,0);
+	aux->success = false;
+
 	/* Clone current thread to new thread.*/
 	tid_t tid = thread_create (name, PRI_DEFAULT, __do_fork, aux);
 	
@@ -111,31 +115,13 @@ process_fork (const char *name, struct intr_frame *if_) {
 		palloc_free_page(aux);
 		return TID_ERROR;
 	}
- 	
-	// 자식 리스트에서 tid로 반환된 자식 찾기 
-	struct thread *child = NULL;
-	struct list_elem *elem = list_begin(&parent->children);
 
-	while (elem != list_end(&parent->children)){
-		// children 리스트의 elem에서 실제 자식 스레드 꺼내기 
-		struct thread *t = list_entry(elem, struct thread, child_elem);
+	sema_down(&aux->fork_sema);
 
-		if (t->tid == tid) {
-        	child = t;   // 찾았으면 child에 저장
-        	break;  
-    	}
-		elem = list_next(elem);
-	}
-	
-	if (child == NULL){
-		return TID_ERROR;
-	}
+	bool success = aux->success; 
+	palloc_free_page(aux);
 
-	sema_down(&child->fork_sema);
-
-	if(child->fork_success == false) return TID_ERROR;
-
-	return tid;
+	return success ? tid : TID_ERROR;
 }
 
 #ifndef VM
@@ -192,25 +178,28 @@ __do_fork (void *aux) {
 	struct thread *parent = fork_arg->parent;
 	struct thread *current = thread_current ();
 	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
-	struct intr_frame *parent_if;
 	bool succ = true;
 
 	/* 1. Read the cpu context to local stack. */
-	memcpy (&if_, &fork_arg->parent_if , sizeof (struct intr_frame));
+	memcpy (&if_, &fork_arg->parent_if , sizeof if_);
 
 	/* 2. Duplicate PT */
 	current->pml4 = pml4_create();
-	if (current->pml4 == NULL)
-		goto error;
+	if (current->pml4 == NULL){
+		succ =false;
+		goto done;
+	}
 
-	process_activate (current);
+	process_activate (current); 
 #ifdef VM
 	supplemental_page_table_init (&current->spt);
 	if (!supplemental_page_table_copy (&current->spt, &parent->spt))
-		goto error;
+		goto done;
 #else
-	if (!pml4_for_each (parent->pml4, duplicate_pte, parent))
-		goto error;
+	if (!pml4_for_each (parent->pml4, duplicate_pte, parent)){
+		succ = false;
+		goto done;
+	}
 #endif
 	process_init ();
 	
@@ -221,16 +210,14 @@ __do_fork (void *aux) {
 	 * TODO:       the resources of parent.*/
 
 	/*  fd 테이블 복사 (with lock)*/
-	lock_init(&filesys_lock);
 	lock_acquire(&filesys_lock);
 	for (int fd = 2; fd < FD_CAP; fd++) { 
     	struct file *f  = parent->fd_table[fd];
-    	
 		if (f != NULL) {
         	struct file *dup = file_duplicate (f);
             	if (dup == NULL) {
                 	succ = false;
-               	break;
+               	break;thread_wait
             	}
             current->fd_table[fd] = dup;
         }
@@ -238,24 +225,17 @@ __do_fork (void *aux) {
 	lock_release(&filesys_lock);
 	
     if (!succ)
-        goto error;
+        goto done;
 
-	// process_init ();
+done:
+	fork_arg->success = succ;
+    sema_up (&fork_arg->fork_sema);
+	if ( !succ){
+		thread_exit ();
+	}
 
-	current->fork_success = true;
-    sema_up (&current->fork_sema);
-
-    palloc_free_page (fork_arg);
-
-	/* Finally, switch to the newly created process. */
-	
-	if_.R.rax = 0; 		// 자식에서 fork() 리턴값은 0
+	if_.R.rax = 0; 
 	do_iret (&if_);
-error:
-    current->fork_success = false;
-    sema_up (&current->fork_sema);
-    palloc_free_page (fork_arg);
-	thread_exit ();
 }
 
 /* Switch the current execution context to the f_name.
@@ -302,12 +282,29 @@ process_exec (void *f_name) {
  * does nothing. */
 int
 process_wait (tid_t child_tid UNUSED) {
-	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
-	 * XXX:       to add infinite loop here before
-	 * XXX:       implementing the process_wait. */
-	timer_sleep(100);
+	struct thread *cur = thread_current();
+    struct list_elem *el;
+    struct child_info *ci_info = cur->child_info;
+	int status = -1;
 
-	return -1;
+	el = list_begin(&cur->children);
+
+	while ( el !=list_end(&cur->children)) {
+		struct child_info *ci_info= list_entry(el, struct child_info, elem);
+
+		if (ci_info->tid == child_tid) {
+			
+			sema_down(&ci_info->wait_sema);
+			status = ci_info->exit_status;
+			list_remove(&ci_info->elem);
+			palloc_free_page(ci_info);
+			return status;
+		}
+
+		el = list_next(el);
+	}
+
+	return status;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
@@ -331,6 +328,8 @@ process_exit (void) {
         curr->fd_table = NULL;
     }
 
+
+    sema_up (&curr->child_info->wait_sema);  // 부모 꺠우기 
 	process_cleanup ();
 }
 
