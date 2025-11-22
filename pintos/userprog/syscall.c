@@ -12,6 +12,7 @@
 #include "filesys/file.h"
 #include "threads/vaddr.h" // for PGSIZE
 #include "userprog/process.h"
+#include "threads/palloc.h"
 struct lock filesys_lock;
 
 void syscall_entry (void);
@@ -27,6 +28,8 @@ void sys_close (int fd);
 int sys_read (int fd, void *buffer, unsigned size);
 int sys_filesize (int fd);
 int sys_write (int fd, const void *buffer, unsigned size);
+int sys_exec (const char *cmd_line);
+
 
 #define FD_CAP (PGSIZE / sizeof(struct file *))
 
@@ -77,6 +80,8 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			break;
 		}
 		case SYS_EXEC:
+			const char *cmd_line = f->R.rdi;
+			sys_exec(cmd_line);
 			break;
 		case SYS_WAIT:{
 			tid_t child_tid = f->R.rdi;
@@ -353,4 +358,21 @@ int sys_read (int fd, void *buffer, unsigned size){
 	}
 
 	return (int) byte_read;
+}
+
+int sys_exec(const char *cmd_line){
+	
+	check_user_str(cmd_line);
+
+	char *cmd_copy = palloc_get_page(PAL_ZERO);
+	if (cmd_copy == NULL){
+		return -1;
+	}
+	strlcpy(cmd_copy,cmd_line, PGSIZE);
+
+	int succ = process_exec(cmd_copy);
+
+    if (succ == -1) {
+        sys_exit (-1);      
+    }          
 }

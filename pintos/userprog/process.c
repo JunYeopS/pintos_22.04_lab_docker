@@ -217,7 +217,7 @@ __do_fork (void *aux) {
         	struct file *dup = file_duplicate (f);
             	if (dup == NULL) {
                 	succ = false;
-               	break;thread_wait
+               	break;
             	}
             current->fd_table[fd] = dup;
         }
@@ -242,7 +242,7 @@ done:
  * Returns -1 on fail. */
 int
 process_exec (void *f_name) {
-	char *file_name = f_name; 		//void to char 
+	char *cmd_line = f_name; 
 	bool success;
 
 	/* We cannot use the intr_frame in the thread structure.
@@ -250,6 +250,7 @@ process_exec (void *f_name) {
 	 * it stores the execution information to the member. */
 	/* 사용자 모드로 전환하기 위해 레지스터를 수동 조작 및 초기화 (Fake Interrupt Frame) */	
 	struct intr_frame _if;
+
 	_if.ds = _if.es = _if.ss = SEL_UDSEG;
 	_if.cs = SEL_UCSEG;
 	_if.eflags = FLAG_IF | FLAG_MBS;
@@ -258,10 +259,10 @@ process_exec (void *f_name) {
 	process_cleanup ();
 
 	/* And then load the binary */
-	success = load (file_name, &_if);
+	success = load (cmd_line, &_if);
 
 	/* If load failed, quit. */
-	palloc_free_page (file_name); 	//실행 파일 이름/인자 문자열을 저장하기 위해 커널이 이전에 할당했던 메모리 페이지를 해제
+	palloc_free_page (cmd_line); 	//실행 파일 이름/인자 문자열을 저장하기 위해 커널이 이전에 할당했던 메모리 페이지를 해제
 	if (!success)
 		return -1;
 
