@@ -7,17 +7,29 @@
 #include "userprog/gdt.h"
 #include "threads/flags.h"
 #include "intrinsic.h"
+#include "threads/palloc.h"
 #include "threads/synch.h"
 #include "filesys/filesys.h"
+#include "userprog/process.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
-static struct lock filesys_lock;
+struct lock filesys_lock;
 
 static void check_address(const void *addr);
+static void check_string(const char *str);
 static void handler_exit(int status);
+static void handler_halt(void);
 static int handler_write(int fd, const void *buffer, unsigned size);
 static bool handler_create(const char *file, unsigned initial_size);
+static bool handler_remove(const char *file);
+static int handler_open(const char *file);
+static void handler_close(int fd);
+static int handler_read(int fd, void *buffer, unsigned size);
+static int handler_filesize(int fd);
+static tid_t handler_fork(const char *thread_name, struct intr_frame *f);
+static int handler_exec(const char *cmd_line);
+static void handler_seek(int fd, off_t position);
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -50,30 +62,40 @@ void
 syscall_handler (struct intr_frame *f UNUSED) {
 	// TODO: Your implementation goes here.
 	int syscall_num = f->R.rax;
-	// f->R.rdi = 첫 번째 인자 -> uint값(fd)
-	// f->R.rsi = 두 번째 인자 -> 문자열의 주소값(주소)
-	// f->R.rdx = 세 번째 인자 -> 사이즈(size)
+	// f->R.rax : 시스템 콜 번호 (반환 값은 처리가 끝난 후 여기에 저장됨)
+    
+    // f->R.rdi : 1번째 인자 (Argument 1)
+    //   자료형: int (fd, status) 또는 char* (file name) 등 상황에 따라 다름
+    
+    // f->R.rsi : 2번째 인자 (Argument 2)
+    //   자료형: void* (buffer), unsigned (size) 등
+    
+    // f->R.rdx : 3번째 인자 (Argument 3)
+    //   자료형: unsigned (size, count) 등
 
 	switch (syscall_num)
 	{
 		case SYS_HALT:
 			handler_halt();
 			break;
-		// case SYS_EXEC:
-		// 	hander_exec();
-		// 	break;
-		case SYS_EXIT:
-			handler_exit(f->R.rdi);
+		case SYS_EXEC:
+			f->R.rax = handler_exec((const char *)f->R.rdi);
 			break;
-		// case SYS_FORK:
-		// 	break;
-		// case SYS_WAIT:
-		// 	break;
+		case SYS_EXIT:
+			handler_exit((int)f->R.rdi);
+			break;
+		case SYS_FORK:
+			f->R.rax = handler_fork((const char *)f->R.rdi, f);
+			break;
+		case SYS_WAIT:
+			f->R.rax = process_wait((tid_t)f->R.rdi);
+			break;
 		case SYS_CREATE:
 			f->R.rax = handler_create((const char*)f->R.rdi, (unsigned)f->R.rsi);
 			break;
-		// case SYS_REMOVE:
-		// 	break;
+		case SYS_REMOVE:
+			f->R.rax = handler_remove((const char *)f->R.rdi);
+			break;
 		case SYS_OPEN:
 			f->R.rax = handler_open((const char*)f->R.rdi);
 			break;
@@ -86,12 +108,14 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_WRITE:
 			f->R.rax = handler_write((int)f->R.rdi, (const void*)f->R.rsi, (unsigned)f->R.rdx);
 			break;
-		// case SYS_SEEK:
-		// 	break;
+		case SYS_SEEK:
+			handler_seek((int)f->R.rdi, (off_t)f->R.rsi);
+			break;
 		// case SYS_TELL:
+		// 	f->R.rax = handler_tell((unsigned)f->R.rdi);
 		// 	break;
 		case SYS_CLOSE:
-			f->R.rax = handler_close((int)f->R.rdi);
+			handler_close((int)f->R.rdi);
 			break;
 		default:
 			handler_exit(-1);
@@ -122,7 +146,7 @@ int give_fdt(struct file *file) {
     struct thread *cur = thread_current();
     struct file **fdt1 = cur->fdt_table;
 
-    for (int fd = 2; fd < 512; fd++) {
+    for (int fd = 2; fd < 128; fd++) {
         // 현재 검사하는 슬롯(fdt[fd])이 비어있는지(NULL) 확인
         if (fdt1[fd] == NULL) {
             fdt1[fd] = file;
@@ -142,7 +166,6 @@ void handler_halt(void){
 void handler_exit(int status){
 	struct thread *cur = thread_current();
 	cur->exit_status = status; // 자식 프로세스의 종료상태 저장
-	printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
 	thread_exit();
 }
 
@@ -163,7 +186,7 @@ int handler_write(int fd, const void *buffer, unsigned size){
         struct thread *cur = thread_current();
         struct file **fdt = cur->fdt_table;
 
-        if (fd < 2 || fd >= 512 || fdt[fd] == NULL) {
+        if (fd < 2 || fd >= 128 || fdt[fd] == NULL) {
             return -1;
         }
 
@@ -191,9 +214,15 @@ bool handler_create(const char *file, unsigned initial_size) {
 int handler_open(const char* file){
 	check_string(file);
 
+	char* fn_copy = palloc_get_page(PAL_ZERO);
+
+	strlcpy(fn_copy, file, PGSIZE);
+
 	lock_acquire(&filesys_lock);
-	struct file *cur_file = filesys_open(file);
+	struct file *cur_file = filesys_open(fn_copy);
 	lock_release(&filesys_lock);
+
+	palloc_free_page(fn_copy);
 
 	if(cur_file == NULL){
 		return -1;
@@ -204,7 +233,6 @@ int handler_open(const char* file){
 	if (fd == -1){
 		file_close(cur_file);
 	}
-
 	return fd;
 }
 
@@ -212,7 +240,7 @@ void handler_close(int fd){
     struct thread *cur = thread_current();
     struct file **fdt = cur->fdt_table;
 
-    if(fd < 2 || fd >= 512 || fdt[fd] == NULL){
+    if(fd < 2 || fd >= 128 || fdt[fd] == NULL){
         return;
     }
 
@@ -224,11 +252,9 @@ void handler_close(int fd){
 }
 
 int handler_read(int fd, void* buffer, unsigned size){
-	
 	if(size == 0) return 0;
 	check_address(buffer);
 	check_address((char*)buffer + size -1);
-
 	char* ptr = (char*) buffer;
 	int bytes_read = 0;
 
@@ -253,7 +279,7 @@ int handler_read(int fd, void* buffer, unsigned size){
 	struct thread *cur = thread_current();
 	struct file **fdt = cur->fdt_table;
 
-    if (fd < 2 || fd >= 512 || fdt[fd] == NULL) {
+    if (fd < 2 || fd >= 128 || fdt[fd] == NULL) {
         return -1;
     }
 
@@ -270,7 +296,7 @@ int handler_filesize(int fd){
 	struct thread *cur = thread_current();
 	struct file **fdt = cur->fdt_table;
 
-	if (fd < 2 || fd >= 512 || fdt[fd] == NULL){
+	if (fd < 2 || fd >= 128 || fdt[fd] == NULL){
 		return -1;
 	}
 
@@ -281,6 +307,56 @@ int handler_filesize(int fd){
 	lock_release(&filesys_lock);
 
 	return size;
+}
+
+tid_t handler_fork(const char *thread_name, struct intr_frame *f){
+	check_address(thread_name);
+	// 부모의 값을 사용해서 fork를 해보자~
+	tid_t tid = process_fork(thread_name, f);
+	// sema를 통해 기다렸다가 자식의 tid를 반환한다.
+	return tid;
+}
+
+int handler_exec (const char *cmd_line) {
+	check_address(cmd_line);
+	if (cmd_line == NULL) handler_exit(-1);
+	
+
+    struct thread *cur = thread_current();
+    char* fn_copy = palloc_get_page(PAL_ZERO);
+    if (fn_copy == NULL) return -1;
+	
+	strlcpy(fn_copy, cmd_line, PGSIZE);
+	
+    if (process_exec(fn_copy) == -1) {
+        return -1;
+    }
+    
+    // 성공 시 리턴 없음
+    return -1;
+}
+
+void handler_seek (int fd, off_t position){
+	if (fd < 2 || fd >= 128) return;
+	struct thread *cur = thread_current();
+	struct file *file = cur->fdt_table[fd];
+
+	if (file == NULL) return;
+
+	lock_acquire(&filesys_lock);
+	file_seek(file, position);
+	lock_release(&filesys_lock);
+}
+
+bool handler_remove (const char* file){
+    check_string(file);
+
+    if (file[0] == '\0') return false;
+    
+	if (filesys_remove(file)){
+		return true;
+	}
+	return false;
 }
 // halt랑 exit
 // enum {
