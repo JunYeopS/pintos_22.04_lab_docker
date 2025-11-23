@@ -32,7 +32,7 @@ static void initd (void *f_name);
 static void __do_fork (void *);
 
 /* General process initializer for initd and other process. */
-static void
+static bool
 process_init (void) {
 	struct thread *current = thread_current ();
 
@@ -40,10 +40,9 @@ process_init (void) {
 	current->fd_table = palloc_get_page(PAL_ZERO);
 	// 실패시 메모리 해제 
 	if (current->fd_table == NULL){
-		palloc_free_page(current);
-		return -1;
+		return false;
 	}
-	// current->fd_table = NULL;
+	return true;
 }
 
 /* Starts the first userland program, called "initd", loaded from FILE_NAME.
@@ -85,9 +84,7 @@ initd (void *f_name) {
 #ifdef VM
 	supplemental_page_table_init (&thread_current ()->spt);
 #endif
-
-	process_init ();
-	if (process_exec (f_name) < 0)
+	if (!process_init()||process_exec (f_name) < 0)
 		PANIC("Fail to launch initd\n");
 	NOT_REACHED ();
 }
@@ -201,7 +198,10 @@ __do_fork (void *aux) {
 		goto done;
 	}
 #endif
-	process_init ();
+	if (!process_init ()) {
+		succ = false;
+		goto done;
+	}
 	
 	/* TODO: Your code goes here.
 	 * TODO: Hint) To duplicate the file object, use `file_duplicate`
@@ -262,7 +262,7 @@ process_exec (void *f_name) {
 	success = load (cmd_line, &_if);
 
 	/* If load failed, quit. */
-	palloc_free_page (cmd_line); 	//실행 파일 이름/인자 문자열을 저장하기 위해 커널이 이전에 할당했던 메모리 페이지를 해제
+	palloc_free_page (cmd_line); 	
 	if (!success)
 		return -1;
 
@@ -318,7 +318,7 @@ process_exit (void) {
 	 * TODO: We recommend you to implement process resource cleanup here. */
 
 	/* 파일 디스크립터 정리 */
-    if (curr->fd_table != NULL) {
+	if (curr->fd_table != NULL) {
         for (int i = 2; i < PGSIZE / sizeof(struct file *); i++) {
             if (curr->fd_table[i] != NULL) {
                 file_close(curr->fd_table[i]);
@@ -329,8 +329,9 @@ process_exit (void) {
         curr->fd_table = NULL;
     }
 
-
-    sema_up (&curr->child_info->wait_sema);  // 부모 꺠우기 
+	if (curr->child_info != NULL) {
+		sema_up (&curr->child_info->wait_sema);
+	} // 부모 꺠우기 
 	process_cleanup ();
 }
 
@@ -445,15 +446,22 @@ load (const char *cmd_line, struct intr_frame *if_) {
 	int i;
 	
 	char *file_name = NULL;
-	char *argv[64]; 
+	char **argv = NULL; 
 	int argc = 0; 
 	char *token, *book_mark;
 
-	// 메모리 낭비 // palloc 써서 메모리 할당을 하자  
-	char cmd_copy[64];
+	char *cmd_copy = NULL;
+	char **argv_ptr = NULL;
+
+	/* Allocate buffers for argument parsing. */
+	cmd_copy = palloc_get_page (PAL_ZERO);
+	argv = palloc_get_page (PAL_ZERO);
+	argv_ptr = palloc_get_page (PAL_ZERO);
+	if (cmd_copy == NULL || argv == NULL || argv_ptr == NULL)
+		goto done;
 	
 	//cmd_line 복사 
-	strlcpy(cmd_copy, cmd_line, sizeof(cmd_copy));
+	strlcpy(cmd_copy, cmd_line, PGSIZE);
 
 	// file_name 만 parsing 
 	token = strtok_r(cmd_copy, " ", &book_mark);
@@ -564,7 +572,6 @@ load (const char *cmd_line, struct intr_frame *if_) {
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
 	
 	// 배열 끝에 null 추가하기 -> Argv[4] = null
-	char *argv_ptr[64];
 
 	// 실제 제이터 push 
 	for (int i = argc-1; i >= 0; i--){
@@ -600,12 +607,18 @@ load (const char *cmd_line, struct intr_frame *if_) {
 	if_->rsp -= sizeof(void *);
 	memset((void *)if_->rsp, 0, sizeof(void *));
 
-
-	success = true;
+success = true;
 
 done:
 	/* We arrive here whether the load is successful or not. */
-	file_close (file);
+	if (file != NULL)
+		file_close (file);
+	if (cmd_copy != NULL)
+		palloc_free_page (cmd_copy);
+	if (argv != NULL)
+		palloc_free_page (argv);
+	if (argv_ptr != NULL)
+		palloc_free_page (argv_ptr);
 	return success;
 }
 

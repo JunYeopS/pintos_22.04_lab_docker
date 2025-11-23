@@ -230,6 +230,7 @@ thread_create (const char *name, int priority,
         /* 자식 쪽에서도 자기 child_info 를 가리키도록 연결 */
         t->child_info = ci_info;
 	} else{
+		palloc_free_page (t);
 		return TID_ERROR;
 	}
 #endif
