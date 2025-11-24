@@ -539,6 +539,9 @@ init_thread (struct thread *t, const char *name, int priority) {
 	list_init (&t->children); 
     t->child_info = NULL;       
 
+	t->exec_file = NULL;
+	t->fd_table = NULL; 
+
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should

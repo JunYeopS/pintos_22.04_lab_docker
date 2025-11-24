@@ -108,6 +108,8 @@ struct thread {
     struct list children;       // 자식들 리스트
     struct child_info *child_info;
 
+	struct file *exec_file;             /* Executable file kept open while running. */
+
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */

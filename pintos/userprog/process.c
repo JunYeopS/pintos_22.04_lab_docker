@@ -202,17 +202,20 @@ __do_fork (void *aux) {
 		succ = false;
 		goto done;
 	}
-	
-	/* TODO: Your code goes here.
-	 * TODO: Hint) To duplicate the file object, use `file_duplicate`
-	 * TODO:       in include/filesys/file.h. Note that parent should not return
-	 * TODO:       from the fork() until this function successfully duplicates
-	 * TODO:       the resources of parent.*/
 
-	/*  fd 테이블 복사 (with lock)*/
 	lock_acquire(&filesys_lock);
-	for (int fd = 2; fd < FD_CAP; fd++) { 
-    	struct file *f  = parent->fd_table[fd];
+
+	if (parent->exec_file != NULL) {
+		current->exec_file = file_duplicate (parent->exec_file);
+		if (current->exec_file == NULL) {
+			succ = false;
+		} else {
+			file_deny_write (current->exec_file);
+		}
+	}
+
+	for (int fd = 2; succ && fd < FD_CAP; fd++) {
+		struct file *f = parent->fd_table[fd];
 		if (f != NULL) {
         	struct file *dup = file_duplicate (f);
             	if (dup == NULL) {
@@ -254,6 +257,17 @@ process_exec (void *f_name) {
 	_if.ds = _if.es = _if.ss = SEL_UDSEG;
 	_if.cs = SEL_UCSEG;
 	_if.eflags = FLAG_IF | FLAG_MBS;
+
+	struct thread *curr = thread_current();
+	
+	/* exec 전 기존 실행 파일 정리 */
+	if (curr->exec_file != NULL) {
+		lock_acquire(&filesys_lock);
+		file_allow_write(curr->exec_file);
+		file_close(curr->exec_file);
+		lock_release(&filesys_lock);
+		curr->exec_file = NULL;
+	}
 
 	/* We first kill the current context */
 	process_cleanup ();
@@ -312,10 +326,15 @@ process_wait (tid_t child_tid UNUSED) {
 void
 process_exit (void) {
 	struct thread *curr = thread_current ();
-	/* TODO: Your code goes here.
-	 * TODO: Implement process termination message (see
-	 * TODO: project2/process_termination.html).
-	 * TODO: We recommend you to implement process resource cleanup here. */
+
+	/* 실행 파일 쓰기 재허용 및 닫기 */
+	if (curr->exec_file != NULL) {
+		lock_acquire(&filesys_lock);
+		file_allow_write(curr->exec_file);
+		file_close(curr->exec_file);
+		lock_release(&filesys_lock);
+		curr->exec_file = NULL;
+	}
 
 	/* 파일 디스크립터 정리 */
 	if (curr->fd_table != NULL) {
@@ -329,10 +348,11 @@ process_exit (void) {
         curr->fd_table = NULL;
     }
 
+	process_cleanup ();
+
 	if (curr->child_info != NULL) {
 		sema_up (&curr->child_info->wait_sema);
 	} // 부모 꺠우기 
-	process_cleanup ();
 }
 
 /* Free the current process's resources. */
@@ -485,11 +505,18 @@ load (const char *cmd_line, struct intr_frame *if_) {
 	process_activate (thread_current ());
 
 	/* Open executable file. */
+	lock_acquire(&filesys_lock);
 	file = filesys_open (file_name);
 	if (file == NULL) {
+		lock_release(&filesys_lock);
 		printf ("load: %s: open failed\n", file_name);
 		goto done;
 	}
+
+	/* 실행 파일 쓰기 거부 설정 */
+	file_deny_write(file);
+	t->exec_file = file;  // 프로세스가 종료될 때까지 파일을 유지
+	lock_release(&filesys_lock);
 
 	/* Read and verify executable header. */
 	//ELF 헤더 검증
@@ -505,10 +532,6 @@ load (const char *cmd_line, struct intr_frame *if_) {
 	}
 
 	/* Read program headers. */
-	/*프로그램 세그먼트 로드
-		Program header를 순회하면 세그먼트(phdr)들을 읽으면 p_type을 확인해서 PT_LOAD를 찾는다
-		PT_LOAD 처리 : 메모리에 적재(Load)되어야 하는 세그먼트 (코드 (.text), 데이터 (.data, .bss) 등등)
-	*/
 	file_ofs = ehdr.e_phoff;
 	for (i = 0; i < ehdr.e_phnum; i++) {
 		struct Phdr phdr;
@@ -551,7 +574,7 @@ load (const char *cmd_line, struct intr_frame *if_) {
 						read_bytes = 0;
 						zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
 					}
-					if (!load_segment (file, file_page, (void *) mem_page, // 계산된 정보를 바탕으로 가상 메모리 페이지에 세그먼트를 매핑하고 로드
+					if (!load_segment (file, file_page, (void *) mem_page,
 								read_bytes, zero_bytes, writable))
 						goto done;
 				}
@@ -570,8 +593,6 @@ load (const char *cmd_line, struct intr_frame *if_) {
 
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
-	
-	// 배열 끝에 null 추가하기 -> Argv[4] = null
 
 	// 실제 제이터 push 
 	for (int i = argc-1; i >= 0; i--){
@@ -581,7 +602,7 @@ load (const char *cmd_line, struct intr_frame *if_) {
 		argv_ptr[i] = (char *)if_->rsp;
 	}
 
-	// pading //set stack 
+	// padding
 	uint8_t word_align = if_->rsp % 8;
 	if (word_align != 0) {
 		if_->rsp -= word_align; // 나머지 만큼 padding 
@@ -607,12 +628,17 @@ load (const char *cmd_line, struct intr_frame *if_) {
 	if_->rsp -= sizeof(void *);
 	memset((void *)if_->rsp, 0, sizeof(void *));
 
-success = true;
+	success = true;
 
 done:
-	/* We arrive here whether the load is successful or not. */
-	if (file != NULL)
-		file_close (file);
+	/* 성공 시에는 exec_file로 유지하여 프로세스 종료 시 닫음 */
+	if (!success && file != NULL) {
+		lock_acquire(&filesys_lock);
+		file_close(file);
+		lock_release(&filesys_lock);
+		t->exec_file = NULL;
+	}
+	
 	if (cmd_copy != NULL)
 		palloc_free_page (cmd_copy);
 	if (argv != NULL)

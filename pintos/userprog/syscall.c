@@ -29,6 +29,8 @@ int sys_read (int fd, void *buffer, unsigned size);
 int sys_filesize (int fd);
 int sys_write (int fd, const void *buffer, unsigned size);
 int sys_exec (const char *cmd_line);
+void sys_seek (int fd, unsigned position);
+int sys_tell (int fd);
 
 
 #define FD_CAP (PGSIZE / sizeof(struct file *))
@@ -123,6 +125,7 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			break;
 		}
 		case SYS_SEEK:
+			sys_seek(f->R.rdi, f->R.rsi);
 			break;
 		case SYS_TELL:
 			break;
@@ -375,4 +378,19 @@ int sys_exec(const char *cmd_line){
     if (succ == -1) {
         sys_exit (-1);      
     }          
+}
+
+void sys_seek (int fd, unsigned position){
+	if (fd < 2 || fd >= FD_CAP) {
+		return;
+	}
+
+	struct file *cur_file = thread_current()->fd_table[fd];
+	if (cur_file == NULL) {
+		return;
+	}
+
+	lock_acquire(&filesys_lock);
+	file_seek(cur_file, position);
+	lock_release(&filesys_lock);
 }
