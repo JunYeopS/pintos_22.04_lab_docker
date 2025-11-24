@@ -30,7 +30,8 @@ int sys_filesize (int fd);
 int sys_write (int fd, const void *buffer, unsigned size);
 int sys_exec (const char *cmd_line);
 void sys_seek (int fd, unsigned position);
-int sys_tell (int fd);
+unsigned sys_tell (int fd);
+bool sys_remove (const char *file);
 
 
 #define FD_CAP (PGSIZE / sizeof(struct file *))
@@ -96,8 +97,11 @@ syscall_handler (struct intr_frame *f UNUSED) {
             f->R.rax = sys_create (file, initial_size);
 		}
 			break;
-		case SYS_REMOVE:
+		case SYS_REMOVE:{
+			const char *file = f->R.rdi;
+			f->R.rax = sys_remove(file);
 			break;
+		}
 		case SYS_OPEN:{
 			char *file = f->R.rdi;
 			f->R.rax = sys_open(file);
@@ -127,7 +131,10 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_SEEK:
 			sys_seek(f->R.rdi, f->R.rsi);
 			break;
-		case SYS_TELL:
+		case SYS_TELL:{
+			int fd = f->R.rdi;
+			sys_tell(fd);
+		}
 			break;
 		case SYS_CLOSE:{
 			sys_close(f->R.rdi);
@@ -393,4 +400,28 @@ void sys_seek (int fd, unsigned position){
 	lock_acquire(&filesys_lock);
 	file_seek(cur_file, position);
 	lock_release(&filesys_lock);
+}
+
+bool sys_remove (const char *file){
+	check_user_str(file);
+
+	lock_acquire(&filesys_lock);
+	bool success = filesys_remove(file);
+	lock_release(&filesys_lock);
+
+	return success;
+}
+
+unsigned sys_tell(int fd){
+	if (fd < 2 || fd >= FD_CAP){
+		return -1;
+	}
+
+	struct file *cur_file = thread_current()->fd_table[fd];
+
+	lock_acquire(&filesys_lock);
+    off_t offset = file_tell(cur_file);
+    lock_release(&filesys_lock);
+	
+	return (unsigned) offset;
 }
