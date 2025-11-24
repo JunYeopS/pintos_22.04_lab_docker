@@ -418,7 +418,10 @@ unsigned sys_tell(int fd){
 	}
 
 	struct file *cur_file = thread_current()->fd_table[fd];
-
+	if (cur_file == NULL) {
+			return -1; 
+		}
+		
 	lock_acquire(&filesys_lock);
     off_t offset = file_tell(cur_file);
     lock_release(&filesys_lock);
