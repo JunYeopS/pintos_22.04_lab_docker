@@ -32,14 +32,12 @@ main (int argc UNUSED, char *argv[] UNUSED) {
   CHECK ((fd2 = open ("sample.txt")) > -1, "open \"sample.txt\"");
 
   buffer = get_boundary_area () - sizeof sample / 2;
-
   byte_cnt += read (fd1, buffer + byte_cnt, 10);
 
   seek (fd2, 10);
   byte_cnt += read (fd2, buffer + byte_cnt, 10);
 
   CHECK (dup2 (fd2, fd3) > 1, "first dup2()");
-
   byte_cnt += read (fd3, buffer + byte_cnt, 10);
 
   seek (fd1, 15);
@@ -62,7 +60,6 @@ main (int argc UNUSED, char *argv[] UNUSED) {
 
   for (fd5 = 10; fd5 == fd1 || fd5 == fd2 || fd5 == fd3 || fd5 == fd4; fd5++){}
   dup2 (1, fd5);
-
   write (fd5, magic, sizeof magic - 1);
 
   create ("cheer", sizeof sample);
@@ -70,13 +67,11 @@ main (int argc UNUSED, char *argv[] UNUSED) {
   
   fd4 = open ("cheer");
   fd6 = open ("up");
-
   dup2 (fd6, 1);
 
   msg ("%d", byte_cnt);
   snprintf (magic, sizeof magic, "%d", byte_cnt);
   write (fd4, magic, strlen (magic));
-
   pid_t pid;
   if (!(pid = fork ("child"))){ // child
     msg ("child begin");

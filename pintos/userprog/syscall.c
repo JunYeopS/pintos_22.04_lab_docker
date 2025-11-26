@@ -32,7 +32,7 @@ int sys_exec (const char *cmd_line);
 void sys_seek (int fd, unsigned position);
 unsigned sys_tell (int fd);
 bool sys_remove (const char *file);
-
+int sys_dup2(int oldfd, int newfd);
 
 #define FD_CAP (PGSIZE / sizeof(struct file *))
 
@@ -133,19 +133,21 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			break;
 		case SYS_TELL:{
 			int fd = f->R.rdi;
-			sys_tell(fd);
+			f->R.rax = sys_tell(fd);
 		}
 			break;
 		case SYS_CLOSE:{
 			sys_close(f->R.rdi);
 			break;
 		}
+		case SYS_DUP2:{
+			int oldfd = f->R.rdi;
+            int newfd = f->R.rsi;
+            f->R.rax = sys_dup2(oldfd, newfd);
+		}
 		default:
 			break;
 		}
-
-	// printf ("system call!\n");
-	// thread_exit ();
 }
 
 void sys_exit (int status){
@@ -167,89 +169,70 @@ void sys_halt (void){
 }
 
 int sys_write (int fd, const void *buffer, unsigned size){
-	
 	if (size == 0){
 		return 0;
 	}
 
-	check_user_buffer(buffer,size);
-		
-	if(fd == 1){
-		putbuf(buffer,size);
-		return size;
+	if (fd < 0 || fd >= FD_CAP) {
+		return -1; 
 	}
 
-	if (fd <= 0 || fd >= FD_CAP) {
-        return -1; 
-    }
+	check_user_buffer(buffer, size);
 
-	unsigned byte_write = 0;
-	struct file *cur_file = thread_current()->fd_table[fd];
+	struct file *f = thread_current()->fd_table[fd];
 
-	if (cur_file == NULL){
+	/* stdout 처리 (센티널 체크) */
+	if (fd >= 0 && fd < FD_CAP) {
+		if (f == STDOUT_SENTINEL) {
+			putbuf(buffer, size);
+			return size;
+		}
+	}
+
+
+	/* stdin이나 NULL 체크 */
+	if (f== NULL || f == STDIN_SENTINEL) {
 		return -1;
 	}
 
 	lock_acquire(&filesys_lock);
-	byte_write = file_write(cur_file, buffer, size);
+	unsigned byte_write = file_write(f, buffer, size);
 	lock_release(&filesys_lock);
 	
 	return (int) byte_write;
 }
 
 bool sys_create (char *file, unsigned initial_size){
-	if (file == NULL ) {
+	if (file == NULL) {
         sys_exit(-1);
     }
 
-	char *cur = file;
-    
-	while (true) {
-        // 현재 pointer가 가리키는 '주소'가 유효한지 검사
-        if (!is_user_vaddr(cur) || pml4_get_page(thread_current()->pml4, cur) == NULL) {
-            sys_exit(-1);
-        }
+	check_user_str(file);
 
-        // 문자열 끝 확인 
-        if (*cur == '\0') {
-            break;
-        }
-		// 다음 문자열 포인터 
-        cur++;
-    }
-    //동시성 제어
-    lock_acquire(&filesys_lock);
-    
-    // 실제 작업 수행
-    bool success = filesys_create(file, initial_size);
-    
-    lock_release(&filesys_lock);
+	lock_acquire(&filesys_lock);
+	bool success = filesys_create(file, initial_size);
+	lock_release(&filesys_lock);
 
-    return success;		
-
+	return success;		
 }
 
 static void check_user_str(char *str){
 	char *cur = str;
 
-	// 포인터자체가 NULL
-	if(str == NULL){
+	if (str == NULL){
 		sys_exit(-1);
 	}
-	// 문자열을 한 바이트씩 순회하며 모든 주소 검사
-	while (true) {
-        // 현재 pointer가 가리키는 '주소'가 유효한지 검사
-    	if (!is_user_vaddr(cur) || pml4_get_page(thread_current()->pml4, cur) == NULL) {
-            sys_exit(-1);
-        }
 
-        // 문자열 끝 확인 
-        if (*cur == '\0') {
-            break;
-        }
-		// 다음 문자열 포인터 
-        cur++;
-    }
+	while (true) {
+		if (!is_user_vaddr(cur) || pml4_get_page(thread_current()->pml4, cur) == NULL) {
+			sys_exit(-1);
+		}
+
+		if (*cur == '\0') {
+			break;
+		}
+		cur++;
+	}
 }
 
 int sys_open(char *file){
@@ -269,36 +252,46 @@ int sys_open(char *file){
 		return -1;
 	}
 
-	// 0,1는 표준 2부터 탐색 
-    for (int i = 2; i < FD_CAP; i++) {
+    for (int i = 0; i < FD_CAP; i++) {
         if (t->fd_table[i] == NULL) {
-            t->fd_table[i] = opened_file;
+            t->fd_table[i] = opened_file; 
             return i; // fd
         }
 	}
+	
 	// 빈 곳 없으면 파일 닫고 실패 처리
+	lock_acquire(&filesys_lock);
 	file_close(opened_file);
+	lock_release(&filesys_lock);
+	
 	return -1;
-
 }
 
 void sys_close (int fd){
 	struct thread *t = thread_current();
 
 	//유효성 검사 
-	if (fd < 2 || fd>=FD_CAP){
+	if (fd < 0 || fd>=FD_CAP){
 		sys_exit(-1);
+		return;
 	}
  
 	struct file *cur_file = t->fd_table[fd];
 
-	// 해당 fd 파일이 null이면 조기 return
-	if (cur_file == NULL) return;
+	/* NULL 또는 stdin/stdout 센티널은 닫지 않음 */
+	if (cur_file == NULL || cur_file == STDIN_SENTINEL || cur_file == STDOUT_SENTINEL) {
+		return;
+	}
 	
-	// 파일 닫기 (락으로 보호)
-	lock_acquire(&filesys_lock);
-	file_close(cur_file);
-    lock_release(&filesys_lock);
+	/* 참조 카운트 감소 */
+	cur_file->ref_cnt--;
+
+	/* 참조 카운트가 0이면 실제로 파일 닫기 */
+	if (cur_file->ref_cnt == 0) {
+		lock_acquire(&filesys_lock);
+		file_close(cur_file);
+		lock_release(&filesys_lock);
+	}
 
 	t->fd_table[fd] = NULL;
 
@@ -315,15 +308,16 @@ void check_user_buffer(void *buffer,unsigned size){
 }
 
 int sys_filesize (int fd){	
-    if (fd < 2 || fd >= FD_CAP) {  
+    if (fd < 0 || fd >= FD_CAP) {  
         return -1;
     }
 
 	struct file *cur_file = thread_current()->fd_table[fd];
 
-    if (cur_file == NULL) {
-        return -1;
-    }
+	/* NULL 또는 stdin/stdout은 filesize 없음 */
+	if (cur_file == NULL || cur_file == STDIN_SENTINEL || cur_file == STDOUT_SENTINEL) {
+		return -1;
+	}
 
     lock_acquire(&filesys_lock);
 	off_t size = file_length(cur_file);
@@ -338,34 +332,34 @@ int sys_read (int fd, void *buffer, unsigned size){
 		return 0;
 	}
 
-	check_user_buffer(buffer,size);
-	
-	unsigned byte_read = 0;
-	
-	if(fd == 0){
-		char *buf = buffer;
-		// 시작주소 부터 한글자씩 
-		for(byte_read; byte_read< size; byte_read++){
-			buf[byte_read] = input_getc();
-		}
-		return (int) byte_read;
+	check_user_buffer(buffer, size);
+
+	if (fd < 0 || fd >= FD_CAP) {
+		return -1; 
 	}
 
-	if (fd == 1 || fd < 0 || fd >= FD_CAP) {
-        return -1; 
-    }
-
-	if (fd >=2){
-		struct file *cur_file = thread_current()->fd_table[fd];
-
-		if (cur_file == NULL){
-			return -1;
+	/* stdin 처리 (센티널 체크) */
+	if (fd >= 0 && fd < FD_CAP) {
+		struct file *f = thread_current()->fd_table[fd];
+		if (f == STDIN_SENTINEL) {
+			char *buf = buffer;
+			for (unsigned i = 0; i < size; i++) {
+				buf[i] = input_getc();
+			}
+			return (int) size;
 		}
-
-		lock_acquire(&filesys_lock);
-		byte_read = file_read(cur_file, buffer, size);
-		lock_release(&filesys_lock);
 	}
+
+	struct file *cur_file = thread_current()->fd_table[fd];
+
+	/* stdout이나 NULL 체크 */
+	if (cur_file == NULL || cur_file == STDOUT_SENTINEL) {
+		return -1;
+	}
+
+	lock_acquire(&filesys_lock);
+	unsigned byte_read = file_read(cur_file, buffer, size);
+	lock_release(&filesys_lock);
 
 	return (int) byte_read;
 }
@@ -388,14 +382,16 @@ int sys_exec(const char *cmd_line){
 }
 
 void sys_seek (int fd, unsigned position){
-	if (fd < 2 || fd >= FD_CAP) {
+	if (fd < 0 || fd >= FD_CAP) {
 		return;
 	}
 
 	struct file *cur_file = thread_current()->fd_table[fd];
-	if (cur_file == NULL) {
+	
+	/* NULL 또는 stdin/stdout은 seek 불가 */
+	if (cur_file == NULL || cur_file == STDIN_SENTINEL || cur_file == STDOUT_SENTINEL) {
 		return;
-	}
+	} 
 
 	lock_acquire(&filesys_lock);
 	file_seek(cur_file, position);
@@ -413,18 +409,53 @@ bool sys_remove (const char *file){
 }
 
 unsigned sys_tell(int fd){
-	if (fd < 2 || fd >= FD_CAP){
-		return -1;
+	if (fd < 0 || fd >= FD_CAP){
+		return 0;
 	}
 
 	struct file *cur_file = thread_current()->fd_table[fd];
-	if (cur_file == NULL) {
-			return -1; 
-		}
+	
+	/* NULL 또는 stdin/stdout은 tell 불가 */
+	if (cur_file == NULL || cur_file == STDIN_SENTINEL || cur_file == STDOUT_SENTINEL) {
+		return 0; 
+	}
 		
 	lock_acquire(&filesys_lock);
     off_t offset = file_tell(cur_file);
     lock_release(&filesys_lock);
-	
 	return (unsigned) offset;
+}
+
+int sys_dup2(int oldfd, int newfd){
+
+	if (oldfd < 0 || oldfd >= FD_CAP || newfd < 0 || newfd >= FD_CAP) {
+		return -1;
+	}
+
+	struct thread *cur = thread_current();
+	struct file *old_f = cur->fd_table[oldfd];
+
+	if (old_f == NULL) {
+		return -1;
+	}
+
+	/* fd가 같으면 바로 반환 */
+	if (oldfd == newfd) {
+		return newfd;
+	}
+	
+	struct file *new_f = cur->fd_table[newfd];
+	
+	/* new_f가 열려 있을때 처리*/
+	sys_close(newfd);
+
+	/* newfd -> oldfd를 참조 */
+	cur->fd_table[newfd] = old_f;
+	
+	/* stdin/stdout 아닌 경우에만 참조 카운트 증가 */
+	if (old_f != STDIN_SENTINEL && old_f != STDOUT_SENTINEL) {
+		old_f->ref_cnt++;
+	}
+
+	return newfd;
 }

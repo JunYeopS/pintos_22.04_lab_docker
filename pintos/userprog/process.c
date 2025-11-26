@@ -19,6 +19,7 @@
 #include "threads/vaddr.h"
 #include "intrinsic.h"
 #include "threads/synch.h" // lock 
+#include "userprog/syscall.h"
 extern struct lock filesys_lock;
 #ifdef VM
 #include "vm/vm.h"
@@ -42,6 +43,9 @@ process_init (void) {
 	if (current->fd_table == NULL){
 		return false;
 	}
+
+	current->fd_table[0] = STDIN_SENTINEL;
+	current->fd_table[1] = STDOUT_SENTINEL;
 	return true;
 }
 
@@ -214,17 +218,29 @@ __do_fork (void *aux) {
 		}
 	}
 
-	for (int fd = 2; succ && fd < FD_CAP; fd++) {
+	for (int fd = 0; succ && fd < FD_CAP; fd++) {
 		struct file *f = parent->fd_table[fd];
-		if (f != NULL) {
-        	struct file *dup = file_duplicate (f);
-            	if (dup == NULL) {
-                	succ = false;
+		
+		if (f == NULL) {
+			continue;
+		}
+		
+		/* stdin/stdout 그대로 복사 */
+		if (f == STDIN_SENTINEL || f == STDOUT_SENTINEL) {
+			current->fd_table[fd] = f;
+			continue;
+		}
+		
+		/* 일반 파일은 duplicate */
+        struct file *dup = file_duplicate (f);
+        if (dup == NULL) {
+                succ = false;
                	break;
-            	}
-            current->fd_table[fd] = dup;
         }
+    
+		current->fd_table[fd] = dup;
     }
+    
 	lock_release(&filesys_lock);
 	
     if (!succ)
@@ -338,21 +354,36 @@ process_exit (void) {
 
 	/* 파일 디스크립터 정리 */
 	if (curr->fd_table != NULL) {
-        for (int i = 2; i < PGSIZE / sizeof(struct file *); i++) {
+		lock_acquire(&filesys_lock);
+        for (int i = 0; i < PGSIZE / sizeof(struct file *); i++) {
             if (curr->fd_table[i] != NULL) {
-                file_close(curr->fd_table[i]);
+				struct file *f = curr->fd_table[i];
+
+				/* stdin/out은 닫지 않는다*/
+				if (f == STDIN_SENTINEL || f == STDOUT_SENTINEL) {
+					continue;
+				}
+
+				/* 참조 카운트 감소 */
+				f->ref_cnt--;
+				
+				/* 더이상 참조 file이 없을때만 */
+				if (f->ref_cnt == 0) {
+					file_close(f);
+				}
                 curr->fd_table[i] = NULL;
             }
         }
+		lock_release(&filesys_lock);
         palloc_free_page(curr->fd_table);
         curr->fd_table = NULL;
     }
 
-	process_cleanup ();
-
 	if (curr->child_info != NULL) {
 		sema_up (&curr->child_info->wait_sema);
 	} // 부모 꺠우기 
+
+	process_cleanup ();
 }
 
 /* Free the current process's resources. */
