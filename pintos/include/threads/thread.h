@@ -5,10 +5,10 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+#include "threads/synch.h" // for sema
 #ifdef VM
 #include "vm/vm.h"
 #endif
-
 
 /* States in a thread's life cycle. */
 enum thread_status {
@@ -100,6 +100,15 @@ struct thread {
 	struct lock *waiting_lock; // thread가 기다리는 lock 
 	struct list donations;  // 기부 기록 용
 	struct list_elem donation_elem;     // 'donations' 리스트에 연결하기 위한 리스트 요소
+
+	//fd table
+	struct file **fd_table; 
+ 
+    /* 자식 관리용 */
+    struct list children;       // 자식들 리스트
+    struct child_info *child_info;
+
+	struct file *exec_file;             /* Executable file kept open while running. */
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
