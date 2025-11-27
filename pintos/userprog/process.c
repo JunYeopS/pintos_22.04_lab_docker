@@ -118,7 +118,14 @@ process_fork (const char *name, struct intr_frame *if_ UNUSED) {
 	// 자식이 do_fork를 할 때까지 멈춘다.
 	sema_down(&child->fork_sema);
 	
-	if (child->exit_status == -1) return TID_ERROR;
+	if (child->exit_status == -1) {
+        // 자식은 현재 process_exit의 sema_down(&free_sema)에 걸려있음.
+        // 부모가 여기서 풀어주지 않으면 자식 스레드 페이지(4KB)가 영원히 해제되지 않음.
+        sema_up(&child->free_sema); 
+        // 자식 리스트에서도 제거
+        list_remove(&child->child_elem);
+        return TID_ERROR;
+    }
 
 	// 부모는 tid를 내놓고 기다린다.
 	return tid;
@@ -218,27 +225,29 @@ __do_fork (void *aux) {
 	// 자식도 페이지 테이블 할당
 	process_init ();
 	
-	current->fdt_table = palloc_get_page(PAL_ZERO);
+	// current->fdt_table = palloc_get_page(PAL_ZERO);
 	if (current->fdt_table == NULL){
 		goto error;
 	}
+	lock_acquire(&filesys_lock);
+
 	// 부모꺼 fdt 복사 ㄱㄱ
 	current->fdt_table[0] = parent->fdt_table[0];
-	current->fdt_table[1] = parent->fdt_table[1];
+	current->fdt_table[1] = parent->fdt_table[1];  // fd 1도 그대로 복사 (stdout 또는 stdout marker)
 	
-	lock_acquire(&filesys_lock);
-	for (int i = 2; i < 128; i++){
-		struct file *parent_file = parent->fdt_table[i];
-		
-		if(parent_file != NULL){
-			// file_duplicate를 사용하여 새로운 객체를 생성하여 할당
-			// fd가 0과 1이 NULL이어도 NULL이 아닐때만 복사하므로 0,1은 걱정 x
-			struct file *child_file = file_duplicate(parent_file);
-			current->fdt_table[i] = child_file;
-		} else {
-			current->fdt_table[i] = NULL;
-		}
-	}
+    for (int i = 2; i < 512; i++){
+        struct file *parent_file = parent->fdt_table[i];
+        
+        if(parent_file != NULL){
+            // stdout marker 처리
+            if (parent_file == (struct file *)1) {
+                current->fdt_table[i] = parent_file;  // marker 그대로 복사
+            } else {
+                struct file *child_file = file_duplicate(parent_file);
+                current->fdt_table[i] = child_file;
+            }
+        }
+    }
 	lock_release(&filesys_lock);
 	// 성공했으면 엄마한테 신호보내기
 	sema_up(&current->fork_sema);
@@ -248,6 +257,25 @@ __do_fork (void *aux) {
 		do_iret (&if_);
 error:
 	// 실패해도 엄마는 깨워야한다.
+	if (current->fdt_table != NULL){
+		lock_acquire(&filesys_lock);
+		for (int i = 2; i < 512; i++){
+			if (current->fdt_table[i] != NULL){
+				file_close(current->fdt_table[i]);
+				current->fdt_table[i] = NULL;
+			}
+		}
+		lock_release(&filesys_lock);
+		palloc_free_page(current->fdt_table);
+		current->fdt_table = NULL;
+	}
+
+	if (current->pml4 != NULL){
+		pml4_activate(NULL);
+	}
+
+	process_cleanup();
+
 	current->exit_status = -1;
 	sema_up(&current->fork_sema);
 	thread_exit ();
@@ -280,6 +308,8 @@ process_exec (void *f_name) {
 	/* And then load the binary */
 	// 바이너리를 로드
 	success = load (file_name, &_if);
+
+	palloc_free_page(file_name);
 
 	/* If load failed, quit. */
 	// 로드에 실패하면 종료
@@ -351,10 +381,36 @@ process_exit (void) {
 
 	// 강제종료될 경우 정상적으로 닫히지 않은 잔존 파일들 닫아주기
 	if (curr->fdt_table != NULL){
-		for (int i = 2; i < 128; i++){
-			if (curr->fdt_table[i] != NULL){
-				file_close(curr->fdt_table[i]);
-				curr->fdt_table[i] = NULL;
+		// 이미 닫힌 파일들을 추적하기 위한 배열
+		for (int i = 2; i < 512; i++){
+			if (curr->fdt_table != NULL) {
+				for (int i = 2; i < 512; i++) {
+					struct file *file = curr->fdt_table[i];
+					
+					// 1. 이미 비어있으면 패스
+					if (file == NULL) continue;
+
+					curr->fdt_table[i] = NULL; // 현재 칸 비우기
+
+					// 2. stdout marker인 경우 (닫을 필요 없음)
+					if (file == (struct file *)1) {
+						continue; 
+					}
+
+					// 3. 파일 닫기 (진짜 메모리 해제)
+					file_close(file);
+
+					// 4. [핵심] 나랑 같은 파일을 가리키는 다른 fd들도 미리 NULL로 밀어버림
+					// (dup2로 복사된 fd들을 처리하기 위함)
+					for (int j = i + 1; j < 512; j++) {
+						if (curr->fdt_table[j] == file) {
+							curr->fdt_table[j] = NULL; // 미리 지워둠 -> 나중에 루프가 여기 도달하면 continue됨
+						}
+					}
+				}
+				// 테이블 자체 해제
+				palloc_free_page(curr->fdt_table);
+				curr->fdt_table = NULL;
 			}
 		}
 		palloc_free_page(curr->fdt_table);
@@ -364,13 +420,16 @@ process_exit (void) {
 	while (!list_empty(&curr->child_list)) {
 		struct list_elem *e = list_pop_front(&curr->child_list);
 		struct thread *child = list_entry(e, struct thread, child_elem);
-		sema_down(&child->free_sema);
+		child->parent = NULL;
+		sema_up(&child->free_sema);
 	}
 	
 	
 	process_cleanup ();
 	
-	lock_release(&filesys_lock);
+	if (!lock_held) {
+		lock_release(&filesys_lock);
+	}
 	// 부모에게 종료 상태 전달
 	sema_up(&curr->wait_sema);
 	
